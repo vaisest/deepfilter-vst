@@ -1,9 +1,11 @@
-use core::time;
 use df::tract::*;
 use ndarray::Array2;
 use nih_plug::nih_log;
 use rtrb::RingBuffer;
-use std::thread;
+use std::{
+    hint::{self, spin_loop},
+    thread,
+};
 
 type Sample = [f32; 2];
 
@@ -12,7 +14,6 @@ pub struct DfWrapper {
     sender: Option<rtrb::Producer<Sample>>,
     receiver: Option<rtrb::Consumer<Sample>>,
     worker: Option<std::thread::JoinHandle<()>>,
-    total: u64,
 }
 
 impl DfWrapper {
@@ -21,7 +22,6 @@ impl DfWrapper {
             sender: None,
             receiver: None,
             worker: None,
-            total: 0,
         }
     }
 
@@ -33,17 +33,18 @@ impl DfWrapper {
         self.worker = None;
     }
 
-    pub fn init(&mut self, buffer_len: usize) {
-        // if self.sender.is_some() {
+    pub fn init(&mut self, plugin_buffer_len: usize) {
         self.nuke_and_annihilate_self();
-        // }
 
-        let (plugin_sender, mut worker_input) = RingBuffer::<Sample>::new(32 * buffer_len);
-        let (mut worker_sender, worker_destination) = RingBuffer::<Sample>::new(32 * buffer_len);
+        let buffer_size = 4096.max(plugin_buffer_len);
 
-        // Fill the buffer with zeroes.
-        nih_log!("sending {} zeroes...", 24 * buffer_len);
-        for _ in 0..(24 * buffer_len) {
+        // create two ring buffers: one for receiving samples from plugin, and another for sending them back
+        let (plugin_sender, mut worker_input) = RingBuffer::<Sample>::new(buffer_size);
+        let (mut worker_sender, worker_destination) = RingBuffer::<Sample>::new(buffer_size);
+
+        // Fill the initial buffer with zeroes
+        nih_log!("sending {} zeroes...", buffer_size);
+        for _ in 0..(buffer_size) {
             worker_sender.push([0.0; 2]).unwrap();
         }
 
@@ -51,19 +52,34 @@ impl DfWrapper {
             let mut model = DfTract::new(DfParams::default(), &RuntimeParams::default_with_ch(2))
                 .expect("init df failed");
 
-            nih_log!("model sr: {}, buffer: {}", model.sr, buffer_len);
+            nih_log!(
+                "worker thread {:?} starting with model sr: {} and buffer size: {}",
+                thread::current().id(),
+                model.sr,
+                buffer_size
+            );
 
             // model uses ndarray, reads from in, writes to mutable out
             let mut noisy = Array2::<f32>::zeros((2, model.hop_size));
             let mut enhanced = noisy.clone();
             let mut idx = 0;
-            while let Ok(frame) = worker_input.pop() {
+
+            // as long as the ring buffer exists, poll for new data
+            while !worker_input.is_abandoned() {
+                if worker_input.is_empty() {
+                    hint::spin_loop();
+                    continue;
+                }
+
+                // fill noisy array one sample at a time, until hop_size amount of samples
+                let frame = worker_input.pop().unwrap();
                 noisy[[0, idx]] = frame[0];
                 noisy[[1, idx]] = frame[1];
                 idx += 1;
                 if idx == model.hop_size {
                     model.process(noisy.view(), enhanced.view_mut()).unwrap();
 
+                    // todo: iterator
                     for x in 0..idx {
                         worker_sender
                             .push([enhanced[[0, x]], enhanced[[1, x]]])
@@ -72,7 +88,8 @@ impl DfWrapper {
                     idx = 0;
                 }
             }
-            nih_log!("worker exiting succsefully");
+
+            nih_log!("worker thread {:?} exiting...", thread::current().id());
         });
 
         self.sender.replace(plugin_sender);
@@ -81,15 +98,13 @@ impl DfWrapper {
     }
 
     pub fn process(&mut self, sample: [&mut f32; 2]) -> Sample {
+        // TODO: resampling when necessary
+        // TODO: variable channel count
         while self.receiver.as_mut().unwrap().is_empty() {
-            thread::sleep(time::Duration::from_millis(1))
+            spin_loop();
         }
 
-        let out = self.receiver.as_mut().unwrap().pop().unwrap_or_else(|op| {
-            nih_log!("EMPTY OH NO after total: {}, {op:?}", self.total);
-            panic!()
-        });
-        self.total += 1;
+        let out = self.receiver.as_mut().unwrap().pop().unwrap();
 
         self.sender
             .as_mut()

@@ -2,7 +2,7 @@ use nih_plug::prelude::*;
 use std::sync::Arc;
 mod thread;
 
-struct Vst {
+pub struct Vst {
     params: Arc<VstParams>,
     model: thread::DfWrapper,
 }
@@ -57,7 +57,7 @@ impl Default for VstParams {
 }
 
 impl Plugin for Vst {
-    const NAME: &'static str = "Vst-Filter";
+    const NAME: &'static str = "vst-filter";
     const VENDOR: &'static str = "vaisest";
     const URL: &'static str = env!("CARGO_PKG_HOMEPAGE");
     const EMAIL: &'static str = "your@email.com";
@@ -103,8 +103,6 @@ impl Plugin for Vst {
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
-        // Lazy::force(&MODEL);
-
         nih_log!(
             "buffer_size: {:?}-{:?}",
             buffer_config.min_buffer_size,
@@ -113,9 +111,6 @@ impl Plugin for Vst {
 
         self.model.init(buffer_config.max_buffer_size as usize);
         // sleep(time::Duration::from_secs(10));
-
-        // self.in_ndarr = Array2::zeros((2, self.model.hop_size));
-        // self.out_ndarr = Array2::zeros((2, self.model.hop_size));
 
         nih_log!(
             "buffer_size: {:?}-{:?}",
@@ -141,20 +136,12 @@ impl Plugin for Vst {
         _aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        // buffer.as_slice()[0].iter().map(|n| self.model.process(*n));
-        // buffer.as_slice()
         for channel_samples in buffer.iter_samples() {
             // Smoothing is optionally built into the parameters themselves
             // let gain = self.params.gain.smoothed.next();
             let mut it = channel_samples.into_iter();
 
             self.model.process([it.next().unwrap(), it.next().unwrap()]);
-            // for sample in channel_samples {
-            //     self.total += 1;
-            //     // *sample *= gain;
-            //     *sample = self.model.process(*sample, self.total);
-            //     nih_log!("{}", *sample);
-            // }
         }
 
         ProcessStatus::Normal
@@ -166,11 +153,20 @@ impl Plugin for Vst {
 }
 
 impl Vst3Plugin for Vst {
-    const VST3_CLASS_ID: [u8; 16] = *b"deepfilternetvst";
+    const VST3_CLASS_ID: [u8; 16] = *b"fooofooofooofooo";
 
     // And also don't forget to change these categories
     const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] =
         &[Vst3SubCategory::Fx, Vst3SubCategory::Dynamics];
 }
 
+impl ClapPlugin for Vst {
+    const CLAP_ID: &'static str = "deepfilternetvst";
+    const CLAP_FEATURES: &'static [ClapFeature] = &[ClapFeature::Filter];
+    const CLAP_DESCRIPTION: Option<&'static str> = None;
+    const CLAP_MANUAL_URL: Option<&'static str> = None;
+    const CLAP_SUPPORT_URL: Option<&'static str> = None;
+}
+
 nih_export_vst3!(Vst);
+nih_export_clap!(Vst);
