@@ -73,11 +73,20 @@ impl DfWrapper {
                     .expect("failed to create worker output resampler"),
             };
 
+            nih_log!(
+                "worker thread {:?} initialised resampler, frames needed in {}",
+                thread::current().id(),
+                resampler.input.input_frames_next(),
+            );
+
             // in_buf -> model_in_buf -> **model processing** -> model_out_buf -> out_buf
+            // only in_buf is not filled by default as it has input samples appended to it
+            // todo: fill it and use idx variable
             let mut in_buf = resampler.input.input_buffer_allocate(false);
-            let mut model_in_buf = resampler.input.output_buffer_allocate(false);
-            let mut model_out_buf = resampler.output.input_buffer_allocate(false);
-            let mut out_buf = resampler.output.output_buffer_allocate(false);
+            // resampler output has to already contain the amount of samples that will be output
+            let mut model_in_buf = resampler.input.output_buffer_allocate(true);
+            let mut model_out_buf = resampler.output.input_buffer_allocate(true);
+            let mut out_buf = resampler.output.output_buffer_allocate(true);
 
             // model uses ndarray, reads from in, writes to mutable out
             let mut noisy = Array2::<f32>::zeros((2, model.hop_size));
@@ -103,12 +112,14 @@ impl DfWrapper {
                 in_buf[0].push(frame[0]);
                 in_buf[1].push(frame[1]);
 
-                if in_buf.len() == resampler.input.input_frames_next() {
+                if in_buf[0].len() > resampler.input.input_frames_next() {
                     // resample input, which should give us hop_size amount of samples in model_in_buf
                     resampler
                         .input
                         .process_into_buffer(&in_buf, &mut model_in_buf, None)
                         .expect("error while resampling input");
+                    in_buf[0].clear();
+                    in_buf[1].clear();
 
                     // todo: iter for ndarrays
 
@@ -117,16 +128,14 @@ impl DfWrapper {
                         for i in 0..model.hop_size {
                             noisy[[c, i]] = model_in_buf[c][i];
                         }
-                        model_in_buf[c].clear();
                     }
 
                     model.process(noisy.view(), enhanced.view_mut()).unwrap();
 
                     // replace model_out_buf with enhanced
                     for c in 0..2 {
-                        model_out_buf[c].clear();
                         for i in 0..model.hop_size {
-                            model_out_buf[c].push(enhanced[[c, i]]);
+                            model_out_buf[c][i] = enhanced[[c, i]];
                         }
                     }
 
