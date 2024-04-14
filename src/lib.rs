@@ -109,16 +109,13 @@ impl Plugin for Vst {
             buffer_config.max_buffer_size
         );
 
-        self.model.init(buffer_config.max_buffer_size as usize);
-        // sleep(time::Duration::from_secs(10));
+        nih_log!("plugin sr: {}", buffer_config.sample_rate);
 
-        nih_log!(
-            "buffer_size: {:?}-{:?}",
-            buffer_config.min_buffer_size,
-            buffer_config.max_buffer_size
+        self.model.init(
+            buffer_config.sample_rate as usize,
+            buffer_config.max_buffer_size as usize,
         );
 
-        nih_log!("plugin sr: {}", buffer_config.sample_rate);
         // Resize buffers and perform other potentially expensive initialization operations here.
         // The `reset()` function is always called right after this function. You can remove this
         // function if you do not need it.

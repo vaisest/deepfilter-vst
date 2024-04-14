@@ -2,6 +2,7 @@ use df::tract::*;
 use ndarray::Array2;
 use nih_plug::nih_log;
 use rtrb::RingBuffer;
+use rubato::{FftFixedIn, FftFixedOut, Resampler};
 use std::{
     hint::{self, spin_loop},
     thread,
@@ -16,6 +17,11 @@ pub struct DfWrapper {
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
+struct IOResampler {
+    input: FftFixedOut<f32>,
+    output: FftFixedIn<f32>,
+}
+
 impl DfWrapper {
     pub fn new() -> Self {
         Self {
@@ -26,19 +32,20 @@ impl DfWrapper {
     }
 
     fn nuke_and_annihilate_self(&mut self) {
-        nih_log!("nuked");
+        // kills worker and ring buffers
+        nih_log!("nuked {:?}", thread::current().id());
         self.sender = None;
         self.receiver = None;
-        // technically it's hanging now but it should HOPEFULLY quit once the stream is empty
         self.worker = None;
     }
 
-    pub fn init(&mut self, plugin_buffer_len: usize) {
+    pub fn init(&mut self, plugin_sample_rate: usize, plugin_buffer_len: usize) {
         self.nuke_and_annihilate_self();
 
         let buffer_size = 4096.max(plugin_buffer_len);
 
         // create two ring buffers: one for receiving samples from plugin, and another for sending them back
+        // plugin_sender -> worker_input -> **worker processing** -> worker_sender -> worker_destination
         let (plugin_sender, mut worker_input) = RingBuffer::<Sample>::new(buffer_size);
         let (mut worker_sender, worker_destination) = RingBuffer::<Sample>::new(buffer_size);
 
@@ -52,6 +59,30 @@ impl DfWrapper {
             let mut model = DfTract::new(DfParams::default(), &RuntimeParams::default_with_ch(2))
                 .expect("init df failed");
 
+            // todo: resampling optional when incoming sr is right
+            let mut resampler = IOResampler {
+                input: FftFixedOut::new(
+                    plugin_sample_rate,
+                    model.sr,
+                    model.hop_size,
+                    1, // no clue what this subchunk thing is
+                    2,
+                )
+                .expect("failed to create worker input resampler"),
+                output: FftFixedIn::new(model.sr, plugin_sample_rate, model.hop_size, 1, 2)
+                    .expect("failed to create worker output resampler"),
+            };
+
+            // in_buf -> model_in_buf -> **model processing** -> model_out_buf -> out_buf
+            let mut in_buf = resampler.input.input_buffer_allocate(false);
+            let mut model_in_buf = resampler.input.output_buffer_allocate(false);
+            let mut model_out_buf = resampler.output.input_buffer_allocate(false);
+            let mut out_buf = resampler.output.output_buffer_allocate(false);
+
+            // model uses ndarray, reads from in, writes to mutable out
+            let mut noisy = Array2::<f32>::zeros((2, model.hop_size));
+            let mut enhanced = noisy.clone();
+
             nih_log!(
                 "worker thread {:?} starting with model sr: {} and buffer size: {}",
                 thread::current().id(),
@@ -59,10 +90,7 @@ impl DfWrapper {
                 buffer_size
             );
 
-            // model uses ndarray, reads from in, writes to mutable out
-            let mut noisy = Array2::<f32>::zeros((2, model.hop_size));
-            let mut enhanced = noisy.clone();
-            let mut idx = 0;
+            // todo: signal that processing is ready to plugin thread
 
             // as long as the ring buffer exists, poll for new data
             while !worker_input.is_abandoned() {
@@ -71,21 +99,47 @@ impl DfWrapper {
                     continue;
                 }
 
-                // fill noisy array one sample at a time, until hop_size amount of samples
                 let frame = worker_input.pop().unwrap();
-                noisy[[0, idx]] = frame[0];
-                noisy[[1, idx]] = frame[1];
-                idx += 1;
-                if idx == model.hop_size {
+                in_buf[0].push(frame[0]);
+                in_buf[1].push(frame[1]);
+
+                if in_buf.len() == resampler.input.input_frames_next() {
+                    // resample input, which should give us hop_size amount of samples in model_in_buf
+                    resampler
+                        .input
+                        .process_into_buffer(&in_buf, &mut model_in_buf, None)
+                        .expect("error while resampling input");
+
+                    // todo: iter for ndarrays
+
+                    // replace noisy with model_in_buf
+                    for c in 0..2 {
+                        for i in 0..model.hop_size {
+                            noisy[[c, i]] = model_in_buf[c][i];
+                        }
+                        model_in_buf[c].clear();
+                    }
+
                     model.process(noisy.view(), enhanced.view_mut()).unwrap();
 
-                    // todo: iterator
-                    for x in 0..idx {
-                        worker_sender
-                            .push([enhanced[[0, x]], enhanced[[1, x]]])
-                            .unwrap();
+                    // replace model_out_buf with enhanced
+                    for c in 0..2 {
+                        model_out_buf[c].clear();
+                        for i in 0..model.hop_size {
+                            model_out_buf[c].push(enhanced[[c, i]]);
+                        }
                     }
-                    idx = 0;
+
+                    // resample output
+                    resampler
+                        .output
+                        .process_into_buffer(&model_out_buf, &mut out_buf, None)
+                        .expect("error while resampling output");
+
+                    for (&l, &r) in out_buf[0].iter().zip(out_buf[1].iter()) {
+                        // should not error as the same amount of samples was taken as input
+                        worker_sender.push([l, r]).unwrap();
+                    }
                 }
             }
 
@@ -98,7 +152,7 @@ impl DfWrapper {
     }
 
     pub fn process(&mut self, sample: [&mut f32; 2]) -> Sample {
-        // TODO: resampling when necessary
+        // TODO: warn for long waits
         // TODO: variable channel count
         while self.receiver.as_mut().unwrap().is_empty() {
             spin_loop();

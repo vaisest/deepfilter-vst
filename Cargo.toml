@@ -28,6 +28,7 @@ nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = [
 ] }
 once_cell = "1.19.0"
 rtrb = "0.3.0"
+rubato = "0.15.0"
 
 [profile.release]
 lto = "thin"
