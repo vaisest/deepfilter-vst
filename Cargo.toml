@@ -14,12 +14,10 @@ members = ["xtask"]
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
-deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet.git", default-features = false, features = [
-    "tract",
-    "use-jemalloc",
-    "default-model-ll",
-] }
-ndarray = "0.15.6"
+# deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet.git", default-features = false, features = [
+#     "capi",
+# ] }
+# ndarray = "^0.15.6"
 # Remove the `assert_process_allocs` feature to allow allocations on the audio
 # thread in debug builds.
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = [
