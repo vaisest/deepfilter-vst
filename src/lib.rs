@@ -29,9 +29,7 @@ impl Default for Vst {
 impl Default for VstParams {
     fn default() -> Self {
         Self {
-            // This gain is stored as linear gain. NIH-plug comes with useful conversion functions
-            // to treat these kinds of parameters as if we were dealing with decibels. Storing this
-            // as decibels is easier to work with, but requires a conversion for every sample.
+            // TODO: implement model parameters here settings
             gain: FloatParam::new(
                 "Gain",
                 util::db_to_gain(0.0),
@@ -57,7 +55,7 @@ impl Default for VstParams {
 }
 
 impl Plugin for Vst {
-    const NAME: &'static str = "vst-filter";
+    const NAME: &'static str = "deepfilter-vst";
     const VENDOR: &'static str = "vaisest";
     const URL: &'static str = env!("CARGO_PKG_HOMEPAGE");
     const EMAIL: &'static str = "dont@email.me";
