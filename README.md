@@ -2,7 +2,7 @@
 
 ## Building
 
-After installing [Rust](https://rustup.rs/), you can compile Vst-Filter as follows:
+After installing [Rust](https://rustup.rs/), you can compile deepfilter-vst as follows:
 
 ```shell
 cargo xtask bundle deepfilter-vst --release
