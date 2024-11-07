@@ -5,7 +5,7 @@
 After installing [Rust](https://rustup.rs/), you can compile Vst-Filter as follows:
 
 ```shell
-cargo xtask bundle vst-filter --release
+cargo xtask bundle deepfilter-vst --release
 ```
 
-This project is very much a WIP and probably will not work well in its current state.
+This project is very much a WIP, but the plugin should work. It does not yet have any configuration and hasn't been tested thoroughly.
