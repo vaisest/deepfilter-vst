@@ -6,6 +6,7 @@ target/
 # demo files
 *.wav
 *.webm
+*.mp4
 test.sh
 
 plugalyzer
@@ -22,7 +23,6 @@ Cargo.lock
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 
-*.webm
 *.log
 mypy_cache/
-./test.py
+test.py

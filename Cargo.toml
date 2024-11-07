@@ -1,5 +1,5 @@
 [package]
-name = "vst-filter"
+name = "deepfilter-vst"
 version = "0.1.0"
 edition = "2021"
 authors = ["vaisest <your@email.com>"]
@@ -10,13 +10,16 @@ description = "A short description of your plugin"
 [workspace]
 members = ["xtask"]
 
+[[bin]]
+name = "vst_standalone"
+path = "src/main.rs"
+
 [lib]
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
 deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet.git", default-features = false, features = [
     "tract",
-    "use-jemalloc",
     "default-model-ll",
 ] }
 ndarray = "0.15.6"
@@ -26,15 +29,9 @@ nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = [
     "assert_process_allocs",
     "standalone",
 ] }
-once_cell = "1.19.0"
-rtrb = "0.3.0"
-rubato = "0.15.0"
+rtrb = "^0.3.0"
+rubato = "^0.15.0"
 
 [profile.release]
 lto = "thin"
 strip = "symbols"
-
-[profile.profiling]
-inherits = "release"
-debug = true
-strip = "none"

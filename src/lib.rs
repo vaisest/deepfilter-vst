@@ -3,8 +3,8 @@ use std::sync::Arc;
 mod thread;
 
 pub struct Vst {
-    params: Arc<VstParams>,
     model: thread::DfWrapper,
+    params: Arc<VstParams>,
 }
 
 #[derive(Params)]
@@ -20,8 +20,8 @@ struct VstParams {
 impl Default for Vst {
     fn default() -> Self {
         Self {
-            params: Arc::new(VstParams::default()),
             model: thread::DfWrapper::new(),
+            params: Arc::new(VstParams::default()),
         }
     }
 }
@@ -60,7 +60,7 @@ impl Plugin for Vst {
     const NAME: &'static str = "vst-filter";
     const VENDOR: &'static str = "vaisest";
     const URL: &'static str = env!("CARGO_PKG_HOMEPAGE");
-    const EMAIL: &'static str = "your@email.com";
+    const EMAIL: &'static str = "dont@email.me";
 
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
@@ -111,20 +111,9 @@ impl Plugin for Vst {
 
         nih_log!("plugin sr: {}", buffer_config.sample_rate);
 
-        self.model.init(
-            buffer_config.sample_rate as usize,
-            buffer_config.max_buffer_size as usize,
-        );
+        self.model.init(buffer_config.sample_rate as usize);
 
-        // Resize buffers and perform other potentially expensive initialization operations here.
-        // The `reset()` function is always called right after this function. You can remove this
-        // function if you do not need it.
         true
-    }
-
-    fn reset(&mut self) {
-        // Reset buffers and envelopes here. This can be called from the audio thread and may not
-        // allocate. You can remove this function if you do not need it.
     }
 
     fn process(
@@ -134,8 +123,6 @@ impl Plugin for Vst {
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         for channel_samples in buffer.iter_samples() {
-            // Smoothing is optionally built into the parameters themselves
-            // let gain = self.params.gain.smoothed.next();
             let mut it = channel_samples.into_iter();
 
             self.model.process([it.next().unwrap(), it.next().unwrap()]);
