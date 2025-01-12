@@ -13,14 +13,22 @@ struct VstParams {
     /// these IDs remain constant, you can rename and reorder these fields as you wish. The
     /// parameters are exposed to the host in the same order they were defined. In this case, this
     /// gain parameter is stored as linear gain while the values are displayed in decibels.
-    #[id = "gain"]
-    pub gain: FloatParam,
+    #[id = "attenuation_limit"]
+    pub attenuation_limit: FloatParam,
+    // pub min_thresh: FloatParam,
+    // pub max_erb: FloatParam,
+    // pub max_thresh: FloatParam,
+
+    // /// "We adopt the post-filter, first proposed by Valin et al., with the
+    // /// aim of slightly over-attenuating noisy TF bins while adding some gain
+    // /// back to less noisy bins.""
+    // pub post_filter_beta: FloatParam,
 }
 
 impl Default for Vst {
     fn default() -> Self {
         Self {
-            model: thread::DfWrapper::new(),
+            model: thread::DfWrapper::new(70.),
             params: Arc::new(VstParams::default()),
         }
     }
@@ -30,20 +38,20 @@ impl Default for VstParams {
     fn default() -> Self {
         Self {
             // TODO: implement model parameters here settings
-            gain: FloatParam::new(
-                "Gain",
-                util::db_to_gain(0.0),
+            attenuation_limit: FloatParam::new(
+                "Attenuation Limit",
+                util::db_to_gain(70.0),
                 FloatRange::Skewed {
-                    min: util::db_to_gain(-30.0),
-                    max: util::db_to_gain(30.0),
+                    min: util::db_to_gain(0.01),
+                    max: util::db_to_gain(100.0),
                     // This makes the range appear as if it was linear when displaying the values as
                     // decibels
-                    factor: FloatRange::gain_skew_factor(-30.0, 30.0),
+                    factor: FloatRange::gain_skew_factor(0.01, 100.0),
                 },
             )
-            // Because the gain parameter is stored as linear gain instead of storing the value as
-            // decibels, we need logarithmic smoothing
-            .with_smoother(SmoothingStyle::Logarithmic(50.0))
+            // // Because the gain parameter is stored as linear gain instead of storing the value as
+            // // decibels, we need logarithmic smoothing
+            // .with_smoother(SmoothingStyle::Logarithmic(50.0))
             .with_unit(" dB")
             // There are many predefined formatters we can use here. If the gain was stored as
             // decibels instead of as a linear gain value, we could have also used the
@@ -120,6 +128,9 @@ impl Plugin for Vst {
         _aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
+        self.model
+            .update_atten_limit(self.params.attenuation_limit.value());
+        // could probably use iter_blocks instead?
         for channel_samples in buffer.iter_samples() {
             let mut it = channel_samples.into_iter();
 

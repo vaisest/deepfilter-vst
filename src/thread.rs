@@ -1,3 +1,4 @@
+use core::f32;
 use df::tract::*;
 use ndarray::Array2;
 use nih_plug::nih_log;
@@ -5,6 +6,7 @@ use rtrb::RingBuffer;
 use rubato::{FftFixedIn, FftFixedOut, Resampler};
 use std::{
     hint::spin_loop,
+    sync::{atomic::AtomicU32, Arc},
     thread,
     time::{Duration, Instant},
 };
@@ -18,6 +20,7 @@ pub struct DfWrapper {
     sender: Option<rtrb::Producer<Sample>>,
     receiver: Option<rtrb::Consumer<Sample>>,
     worker: Option<std::thread::JoinHandle<()>>,
+    param: Arc<AtomicU32>,
 }
 
 struct IOResampler {
@@ -26,27 +29,35 @@ struct IOResampler {
 }
 
 impl DfWrapper {
-    pub fn new() -> Self {
+    pub fn new(attenuation_limit: f32) -> Self {
         Self {
             sender: None,
             receiver: None,
             worker: None,
+            param: Arc::new(AtomicU32::new(attenuation_limit.to_bits())),
         }
     }
 
     /// initialises model in worker thread and attaches input and output buffers to it
     pub fn init(&mut self, plugin_sample_rate: usize) {
-        // 16s
-        let buffer_capacity = (480 * 2).max(480);
+        // the field is private, but we know it's 480
+        let hop_size = 480;
+        let buffer_capacity = hop_size * 2;
 
         // create two ring buffers: one for receiving samples from plugin, and another for sending them back
         // plugin_sender -> worker_input -> **worker processing** -> worker_sender -> worker_destination
         let (plugin_sender, mut worker_input) = RingBuffer::<Sample>::new(buffer_capacity);
         let (mut worker_sender, worker_destination) = RingBuffer::<Sample>::new(buffer_capacity);
 
+        let param = self.param.clone();
+
         let worker = thread::spawn(move || {
             let mut model = DfTract::new(DfParams::default(), &RuntimeParams::default_with_ch(2))
                 .expect("initialising df failed");
+
+            model.set_atten_lim(f32::from_bits(
+                param.load(std::sync::atomic::Ordering::Relaxed),
+            ));
 
             // todo: resampling optional when incoming sr is right
             let mut resampler = IOResampler {
@@ -82,9 +93,10 @@ impl DfWrapper {
             let mut enhanced = noisy.clone();
 
             nih_log!(
-                "worker thread {:?} starting with model sr: {}",
+                "worker thread {:?} starting with model sr: {} and atten_lim: {:?}",
                 thread::current().id(),
                 model.sr,
+                model.atten_lim,
             );
 
             // Fill the initial output buffer with zeroes
@@ -95,6 +107,11 @@ impl DfWrapper {
 
             // as long as the ring buffer exists, poll for new data
             while !worker_input.is_abandoned() {
+                let new_param = f32::from_bits(param.load(std::sync::atomic::Ordering::Relaxed));
+                if model.atten_lim.is_some_and(|old| old != new_param) {
+                    model.set_atten_lim(new_param);
+                }
+
                 if worker_input.is_empty() {
                     spin_loop();
                     continue;
@@ -156,6 +173,7 @@ impl DfWrapper {
 
         self.sender.replace(plugin_sender);
         self.receiver.replace(worker_destination);
+        assert!(!worker.is_finished(), "the worker failed to initialise.");
         self.worker.replace(worker);
     }
 
@@ -191,6 +209,13 @@ impl DfWrapper {
         let out = self.receive_sample();
         *sample[0] = out[0];
         *sample[1] = out[1];
+    }
+
+    pub fn update_atten_limit(&mut self, db: f32) {
+        let int = db.to_bits();
+        if self.param.load(std::sync::atomic::Ordering::Relaxed) != int {
+            self.param.store(int, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     fn send_zeroes(&mut self, n: usize) {
