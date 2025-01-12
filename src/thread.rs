@@ -8,7 +8,6 @@ use std::{
     hint::spin_loop,
     sync::{atomic::AtomicU32, Arc},
     thread,
-    time::{Duration, Instant},
 };
 
 type Sample = [f32; 2];
@@ -20,7 +19,7 @@ pub struct DfWrapper {
     sender: Option<rtrb::Producer<Sample>>,
     receiver: Option<rtrb::Consumer<Sample>>,
     worker: Option<std::thread::JoinHandle<()>>,
-    param: Arc<AtomicU32>,
+    worker_param: Arc<AtomicU32>,
 }
 
 struct IOResampler {
@@ -34,30 +33,39 @@ impl DfWrapper {
             sender: None,
             receiver: None,
             worker: None,
-            param: Arc::new(AtomicU32::new(attenuation_limit.to_bits())),
+            worker_param: Arc::new(AtomicU32::new(attenuation_limit.to_bits())),
         }
     }
 
     /// initialises model in worker thread and attaches input and output buffers to it
-    pub fn init(&mut self, plugin_sample_rate: usize) {
+    pub fn init(&mut self, plugin_sample_rate: usize) -> u32 {
         // the field is private, but we know it's 480
-        let hop_size = 480;
+        let hop_size = 960u32;
         let buffer_capacity = hop_size * 2;
 
         // create two ring buffers: one for receiving samples from plugin, and another for sending them back
         // plugin_sender -> worker_input -> **worker processing** -> worker_sender -> worker_destination
-        let (plugin_sender, mut worker_input) = RingBuffer::<Sample>::new(buffer_capacity);
-        let (mut worker_sender, worker_destination) = RingBuffer::<Sample>::new(buffer_capacity);
+        let (plugin_sender, mut worker_input) = RingBuffer::<Sample>::new(buffer_capacity as usize);
+        let (mut worker_sender, worker_destination) =
+            RingBuffer::<Sample>::new(buffer_capacity as usize);
 
-        let param = self.param.clone();
+        let param = self.worker_param.clone();
 
         let worker = thread::spawn(move || {
             let mut model = DfTract::new(DfParams::default(), &RuntimeParams::default_with_ch(2))
                 .expect("initialising df failed");
 
-            model.set_atten_lim(f32::from_bits(
-                param.load(std::sync::atomic::Ordering::Relaxed),
-            ));
+            // set initial parameters
+            let mut current_atten_lim =
+                f32::from_bits(param.load(std::sync::atomic::Ordering::Relaxed));
+            model.set_atten_lim(current_atten_lim);
+            // same default as the official LADSPA plugin
+            model.min_db_thresh = -15.;
+            model.max_db_erb_thresh = 35.;
+            model.max_db_df_thresh = 35.;
+            nih_log!("atten lim set to: {current_atten_lim}");
+
+            // model.set_pf_beta(1.);
 
             // todo: resampling optional when incoming sr is right
             let mut resampler = IOResampler {
@@ -107,14 +115,15 @@ impl DfWrapper {
 
             // as long as the ring buffer exists, poll for new data
             while !worker_input.is_abandoned() {
-                let new_param = f32::from_bits(param.load(std::sync::atomic::Ordering::Relaxed));
-                if model.atten_lim.is_some_and(|old| old != new_param) {
-                    model.set_atten_lim(new_param);
-                }
-
                 if worker_input.is_empty() {
                     spin_loop();
                     continue;
+                }
+
+                let new_param = f32::from_bits(param.load(std::sync::atomic::Ordering::Relaxed));
+                if new_param != current_atten_lim {
+                    model.set_atten_lim(new_param);
+                    current_atten_lim = new_param;
                 }
 
                 let frame = worker_input.pop().unwrap();
@@ -175,6 +184,7 @@ impl DfWrapper {
         self.receiver.replace(worker_destination);
         assert!(!worker.is_finished(), "the worker failed to initialise.");
         self.worker.replace(worker);
+        buffer_capacity
     }
 
     pub fn process(&mut self, sample: [&mut f32; 2]) {
@@ -185,24 +195,24 @@ impl DfWrapper {
 
         self.send_sample(&[*sample[0], *sample[1]]);
 
-        // TODO: variable channel count
-        let mut start = Instant::now();
+        // // TODO: variable channel count
+        // let mut start = Instant::now();
         while self.receiver.as_mut().unwrap().is_empty() {
-            // this is a special case, mostly for offline processing
-            // it is possible that we approach end of input and no longer get new samples
-            // and in this case we are essentially forced to pad with zeros
-            // and we just hope for it to be correct
+            //     // this is a special case, mostly for offline processing
+            //     // it is possible that we approach end of input and no longer get new samples
+            //     // and in this case we are essentially forced to pad with zeros
+            //     // and we just hope for it to be correct
 
-            // TODO: dynamic sr
-            // FIXME
-            if start.elapsed() >= Duration::new(2, 0) {
-                start = Instant::now();
-                nih_log!("waiting for a long time, padding 480 zeroes");
-                self.send_zeroes(480);
-            }
-            // // this is probably spinning empty at the end of input.
-            // there would be zero samples coming in, but the buffer
-            // does not contain enough to infer another batch of samples
+            //     // TODO: dynamic sr
+            //     // FIXME
+            //     if start.elapsed() >= Duration::new(2, 0) {
+            //         start = Instant::now();
+            //         nih_log!("waiting for a long time, padding 480 zeroes");
+            //         self.send_zeroes(480);
+            //     }
+            //     // // this is probably spinning empty at the end of input.
+            //     // there would be zero samples coming in, but the buffer
+            //     // does not contain enough to infer another batch of samples
             spin_loop();
         }
 
@@ -213,20 +223,21 @@ impl DfWrapper {
 
     pub fn update_atten_limit(&mut self, db: f32) {
         let int = db.to_bits();
-        if self.param.load(std::sync::atomic::Ordering::Relaxed) != int {
-            self.param.store(int, std::sync::atomic::Ordering::Relaxed);
+        if self.worker_param.load(std::sync::atomic::Ordering::Relaxed) != int {
+            self.worker_param
+                .store(int, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
-    fn send_zeroes(&mut self, n: usize) {
-        assert!(
-            self.sender.is_some(),
-            "ringbuffer does not exist when trying to send zeroes"
-        );
-        for _ in 0..n {
-            self.send_sample(&[0.0, 0.0]);
-        }
-    }
+    // fn send_zeroes(&mut self, n: usize) {
+    //     assert!(
+    //         self.sender.is_some(),
+    //         "ringbuffer does not exist when trying to send zeroes"
+    //     );
+    //     for _ in 0..n {
+    //         self.send_sample(&[0.0, 0.0]);
+    //     }
+    // }
 
     fn send_sample(&mut self, s: &Sample) {
         self.sender

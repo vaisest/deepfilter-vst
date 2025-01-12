@@ -37,27 +37,24 @@ impl Default for Vst {
 impl Default for VstParams {
     fn default() -> Self {
         Self {
-            // TODO: implement model parameters here settings
             attenuation_limit: FloatParam::new(
                 "Attenuation Limit",
-                util::db_to_gain(70.0),
-                FloatRange::Skewed {
-                    min: util::db_to_gain(0.01),
-                    max: util::db_to_gain(100.0),
-                    // This makes the range appear as if it was linear when displaying the values as
-                    // decibels
-                    factor: FloatRange::gain_skew_factor(0.01, 100.0),
+                70.0,
+                FloatRange::Linear {
+                    min: 0.1,
+                    max: 100.0,
                 },
             )
-            // // Because the gain parameter is stored as linear gain instead of storing the value as
-            // // decibels, we need logarithmic smoothing
-            // .with_smoother(SmoothingStyle::Logarithmic(50.0))
             .with_unit(" dB")
-            // There are many predefined formatters we can use here. If the gain was stored as
-            // decibels instead of as a linear gain value, we could have also used the
-            // `.with_step_size(0.1)` function to get internal rounding.
-            .with_value_to_string(formatters::v2s_f32_gain_to_db(2))
-            .with_string_to_value(formatters::s2v_f32_gain_to_db()),
+            .with_step_size(0.1)
+            .with_value_to_string(formatters::v2s_f32_rounded(2))
+            .with_string_to_value(Arc::new(|s| {
+                if let Some((n, _)) = s.split_once(" ") {
+                    n.parse::<f32>().ok()
+                } else {
+                    None
+                }
+            })),
         }
     }
 }
@@ -72,6 +69,7 @@ impl Plugin for Vst {
 
     // The first audio IO layout is used as the default. The other layouts may be selected either
     // explicitly or automatically by the host or the user depending on the plugin API/backend.
+    // TODO: add mono
     const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
         main_input_channels: NonZeroU32::new(2),
         main_output_channels: NonZeroU32::new(2),
@@ -107,7 +105,7 @@ impl Plugin for Vst {
         &mut self,
         _audio_io_layout: &AudioIOLayout,
         buffer_config: &BufferConfig,
-        _context: &mut impl InitContext<Self>,
+        context: &mut impl InitContext<Self>,
     ) -> bool {
         nih_log!(
             "buffer_size: {:?}-{:?}",
@@ -115,9 +113,16 @@ impl Plugin for Vst {
             buffer_config.max_buffer_size
         );
 
-        nih_log!("plugin sr: {}", buffer_config.sample_rate);
+        nih_log!(
+            "plugin sr: {}, plugin params: {:?}",
+            buffer_config.sample_rate,
+            self.params.attenuation_limit
+        );
 
-        self.model.init(buffer_config.sample_rate as usize);
+        let latency = self.model.init(buffer_config.sample_rate as usize);
+        context.set_latency_samples(latency);
+        self.model
+            .update_atten_limit(self.params.attenuation_limit.value());
 
         true
     }

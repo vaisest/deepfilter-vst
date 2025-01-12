@@ -18,9 +18,12 @@ path = "src/main.rs"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
+# fork due to dependency version issues
 deep_filter = { git = "https://github.com/vaisest/DeepFilterNet.git", default-features = false, features = [
     "tract",
-    "default-model-ll",
+    # note: not the LL model due to this having much faster processing for some reason.
+    # TODO: add as feature
+    "default-model",
 ] }
 ndarray = "^0.15"
 # Remove the `assert_process_allocs` feature to allow allocations on the audio
