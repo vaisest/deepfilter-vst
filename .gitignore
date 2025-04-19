@@ -8,6 +8,7 @@ target/
 *.webm
 *.mp4
 test.sh
+test.ps1
 
 plugalyzer
 peaks/

@@ -21,7 +21,11 @@ crate-type = ["cdylib", "lib"]
 # fork due to dependency version issues
 deep_filter = { git = "https://github.com/vaisest/DeepFilterNet.git", default-features = false, features = [
     "tract",
-    # note: not the LL model due to this having much faster processing for some reason.
+    # there are two models available. The regular one and an "LL" (presumably
+    # low latency) version which does not have lookahead, but has less latency
+    # The LL version would seem like a smart choice to use here, but it seems to
+    # be about twice as slow
+
     # TODO: add as feature
     "default-model",
 ] }

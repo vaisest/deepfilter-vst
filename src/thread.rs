@@ -157,14 +157,14 @@ impl DfWrapper {
                         }
                     }
 
+                    let samples_out_count = resampler.output.output_frames_next();
                     // resample output
                     resampler
                         .output
                         .process_into_buffer(&model_out_buf, &mut out_buf, None)
                         .expect("error while resampling output");
 
-                    for i in 0..model.hop_size {
-                        // should never error as the same amount of samples was taken as input
+                    for i in 0..samples_out_count {
                         worker_sender
                             .push([out_buf[0][i], out_buf[1][i]])
                             .expect("worker_sender push failed");
