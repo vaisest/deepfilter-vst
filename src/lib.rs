@@ -2,26 +2,29 @@ use nih_plug::prelude::*;
 use std::sync::Arc;
 mod thread;
 
+/// VST plugin implementation for DeepFilter noise reduction.
+/// 
+/// This plugin uses the DeepFilter neural network model to reduce noise in audio signals.
+/// It processes audio in a separate worker thread to avoid blocking the audio processing thread.
 pub struct Vst {
     model: thread::DfWrapper,
     params: Arc<VstParams>,
+    last_attenuation_limit: f32,
 }
 
 #[derive(Params)]
 struct VstParams {
-    /// The parameter's ID is used to identify the parameter in the wrappred plugin API. As long as
+    /// Controls the maximum attenuation applied to noisy frequency bins.
+    /// Higher values allow more aggressive noise reduction but may affect speech quality.
+    /// The parameter's ID is used to identify the parameter in the wrapped plugin API. As long as
     /// these IDs remain constant, you can rename and reorder these fields as you wish. The
-    /// parameters are exposed to the host in the same order they were defined. In this case, this
-    /// gain parameter is stored as linear gain while the values are displayed in decibels.
+    /// parameters are exposed to the host in the same order they were defined.
     #[id = "attenuation_limit"]
     pub attenuation_limit: FloatParam,
+    // TODO: Future parameters could include:
     // pub min_thresh: FloatParam,
-    // pub max_erb: FloatParam,
+    // pub max_erb: FloatParam, 
     // pub max_thresh: FloatParam,
-
-    // /// "We adopt the post-filter, first proposed by Valin et al., with the
-    // /// aim of slightly over-attenuating noisy TF bins while adding some gain
-    // /// back to less noisy bins.""
     // pub post_filter_beta: FloatParam,
 }
 
@@ -30,6 +33,7 @@ impl Default for Vst {
         Self {
             model: thread::DfWrapper::new(70.),
             params: Arc::new(VstParams::default()),
+            last_attenuation_limit: 70.0,
         }
     }
 }
@@ -121,8 +125,10 @@ impl Plugin for Vst {
 
         let latency = self.model.init(buffer_config.sample_rate as usize);
         context.set_latency_samples(latency);
-        self.model
-            .update_atten_limit(self.params.attenuation_limit.value());
+        
+        // Initialize cached parameter value and update model
+        self.last_attenuation_limit = self.params.attenuation_limit.value();
+        self.model.update_atten_limit(self.last_attenuation_limit);
 
         true
     }
@@ -133,20 +139,26 @@ impl Plugin for Vst {
         _aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        self.model
-            .update_atten_limit(self.params.attenuation_limit.value());
-        // could probably use iter_blocks instead?
+        // Only update attenuation limit if it has changed
+        let current_attenuation_limit = self.params.attenuation_limit.value();
+        if (current_attenuation_limit - self.last_attenuation_limit).abs() > f32::EPSILON {
+            self.model.update_atten_limit(current_attenuation_limit);
+            self.last_attenuation_limit = current_attenuation_limit;
+        }
+
+        // Process audio samples
         for channel_samples in buffer.iter_samples() {
             let mut it = channel_samples.into_iter();
-
-            self.model.process([it.next().unwrap(), it.next().unwrap()]);
+            if let (Some(left), Some(right)) = (it.next(), it.next()) {
+                self.model.process([left, right]);
+            }
         }
 
         ProcessStatus::Normal
     }
 
     fn deactivate(&mut self) {
-        nih_log!("deactivated lol");
+        nih_log!("Plugin deactivated");
     }
 }
 
