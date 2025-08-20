@@ -108,6 +108,8 @@ This repository includes GitHub Actions workflows for automated releases:
 
 Both workflows build the plugin for Linux and Windows, create release archives, and publish a draft release with the compiled files ready for download.
 
+For detailed release instructions, see [RELEASE.md](RELEASE.md).
+
 ## Plugin Parameters
 
 The DeepFilter VST plugin provides 5 configurable parameters for fine-tuning noise reduction:
