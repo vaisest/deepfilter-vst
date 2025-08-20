@@ -27,3 +27,6 @@ Cargo.lock
 *.log
 mypy_cache/
 test.py
+
+# Release testing directory
+release-test/
