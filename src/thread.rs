@@ -25,11 +25,33 @@ const BUFFER_CAPACITY_MULTIPLIER: u32 = 2;
 /// 
 /// Note: this will add latency to the input, but this
 /// is required due to the model not implementing Send
+/// Structure to hold all worker thread parameters using atomic operations for thread-safe updates
+#[derive(Clone)]
+struct WorkerParams {
+    attenuation_limit: Arc<AtomicU32>,
+    min_thresh: Arc<AtomicU32>,
+    max_erb: Arc<AtomicU32>,
+    max_thresh: Arc<AtomicU32>,
+    post_filter_beta: Arc<AtomicU32>,
+}
+
+impl WorkerParams {
+    fn new(attenuation_limit: f32, min_thresh: f32, max_erb: f32, max_thresh: f32, post_filter_beta: f32) -> Self {
+        Self {
+            attenuation_limit: Arc::new(AtomicU32::new(attenuation_limit.to_bits())),
+            min_thresh: Arc::new(AtomicU32::new(min_thresh.to_bits())),
+            max_erb: Arc::new(AtomicU32::new(max_erb.to_bits())),
+            max_thresh: Arc::new(AtomicU32::new(max_thresh.to_bits())),
+            post_filter_beta: Arc::new(AtomicU32::new(post_filter_beta.to_bits())),
+        }
+    }
+}
+
 pub struct DfWrapper {
     sender: Option<rtrb::Producer<Sample>>,
     receiver: Option<rtrb::Consumer<Sample>>,
     worker: Option<std::thread::JoinHandle<()>>,
-    worker_param: Arc<AtomicU32>,
+    worker_params: WorkerParams,
 }
 
 struct IOResampler {
@@ -38,12 +60,12 @@ struct IOResampler {
 }
 
 impl DfWrapper {
-    pub fn new(attenuation_limit: f32) -> Self {
+    pub fn new(attenuation_limit: f32, min_thresh: f32, max_erb: f32, max_thresh: f32, post_filter_beta: f32) -> Self {
         Self {
             sender: None,
             receiver: None,
             worker: None,
-            worker_param: Arc::new(AtomicU32::new(attenuation_limit.to_bits())),
+            worker_params: WorkerParams::new(attenuation_limit, min_thresh, max_erb, max_thresh, post_filter_beta),
         }
     }
 
@@ -59,7 +81,7 @@ impl DfWrapper {
         let (mut worker_sender, worker_destination) =
             RingBuffer::<Sample>::new(buffer_capacity as usize);
 
-        let param = self.worker_param.clone();
+        let params = self.worker_params.clone();
 
         let worker = thread::spawn(move || {
             let mut model = DfTract::new(DfParams::default(), &RuntimeParams::default_with_ch(2))
@@ -67,15 +89,27 @@ impl DfWrapper {
 
             // set initial parameters
             let mut current_atten_lim =
-                f32::from_bits(param.load(std::sync::atomic::Ordering::Relaxed));
+                f32::from_bits(params.attenuation_limit.load(std::sync::atomic::Ordering::Relaxed));
+            let mut current_min_thresh =
+                f32::from_bits(params.min_thresh.load(std::sync::atomic::Ordering::Relaxed));
+            let mut current_max_erb =
+                f32::from_bits(params.max_erb.load(std::sync::atomic::Ordering::Relaxed));
+            let mut current_max_thresh =
+                f32::from_bits(params.max_thresh.load(std::sync::atomic::Ordering::Relaxed));
+            let mut current_post_filter_beta =
+                f32::from_bits(params.post_filter_beta.load(std::sync::atomic::Ordering::Relaxed));
+                
             model.set_atten_lim(current_atten_lim);
-            // same default as the official LADSPA plugin
-            model.min_db_thresh = -15.;
-            model.max_db_erb_thresh = 35.;
-            model.max_db_df_thresh = 35.;
+            model.min_db_thresh = current_min_thresh;
+            model.max_db_erb_thresh = current_max_erb;
+            model.max_db_df_thresh = current_max_thresh;
+            model.set_pf_beta(current_post_filter_beta);
+            
             nih_log!("atten lim set to: {current_atten_lim}");
-
-            // model.set_pf_beta(1.);
+            nih_log!("min_thresh set to: {current_min_thresh}");
+            nih_log!("max_erb set to: {current_max_erb}");
+            nih_log!("max_thresh set to: {current_max_thresh}");
+            nih_log!("post_filter_beta set to: {current_post_filter_beta}");
 
             // todo: resampling optional when incoming sr is right
             let mut resampler = IOResampler {
@@ -131,10 +165,35 @@ impl DfWrapper {
                     continue;
                 }
 
-                let new_param = f32::from_bits(param.load(std::sync::atomic::Ordering::Relaxed));
-                if new_param != current_atten_lim {
-                    model.set_atten_lim(new_param);
-                    current_atten_lim = new_param;
+                // Check for parameter updates and apply them
+                let new_atten_lim = f32::from_bits(params.attenuation_limit.load(std::sync::atomic::Ordering::Relaxed));
+                if new_atten_lim != current_atten_lim {
+                    model.set_atten_lim(new_atten_lim);
+                    current_atten_lim = new_atten_lim;
+                }
+                
+                let new_min_thresh = f32::from_bits(params.min_thresh.load(std::sync::atomic::Ordering::Relaxed));
+                if new_min_thresh != current_min_thresh {
+                    model.min_db_thresh = new_min_thresh;
+                    current_min_thresh = new_min_thresh;
+                }
+                
+                let new_max_erb = f32::from_bits(params.max_erb.load(std::sync::atomic::Ordering::Relaxed));
+                if new_max_erb != current_max_erb {
+                    model.max_db_erb_thresh = new_max_erb;
+                    current_max_erb = new_max_erb;
+                }
+                
+                let new_max_thresh = f32::from_bits(params.max_thresh.load(std::sync::atomic::Ordering::Relaxed));
+                if new_max_thresh != current_max_thresh {
+                    model.max_db_df_thresh = new_max_thresh;
+                    current_max_thresh = new_max_thresh;
+                }
+                
+                let new_post_filter_beta = f32::from_bits(params.post_filter_beta.load(std::sync::atomic::Ordering::Relaxed));
+                if new_post_filter_beta != current_post_filter_beta {
+                    model.set_pf_beta(new_post_filter_beta);
+                    current_post_filter_beta = new_post_filter_beta;
                 }
 
                 let frame = worker_input.pop().unwrap();
@@ -227,8 +286,40 @@ impl DfWrapper {
 
     pub fn update_atten_limit(&mut self, db: f32) {
         let int = db.to_bits();
-        if self.worker_param.load(std::sync::atomic::Ordering::Relaxed) != int {
-            self.worker_param
+        if self.worker_params.attenuation_limit.load(std::sync::atomic::Ordering::Relaxed) != int {
+            self.worker_params.attenuation_limit
+                .store(int, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    
+    pub fn update_min_thresh(&mut self, db: f32) {
+        let int = db.to_bits();
+        if self.worker_params.min_thresh.load(std::sync::atomic::Ordering::Relaxed) != int {
+            self.worker_params.min_thresh
+                .store(int, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    
+    pub fn update_max_erb(&mut self, db: f32) {
+        let int = db.to_bits();
+        if self.worker_params.max_erb.load(std::sync::atomic::Ordering::Relaxed) != int {
+            self.worker_params.max_erb
+                .store(int, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    
+    pub fn update_max_thresh(&mut self, db: f32) {
+        let int = db.to_bits();
+        if self.worker_params.max_thresh.load(std::sync::atomic::Ordering::Relaxed) != int {
+            self.worker_params.max_thresh
+                .store(int, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    
+    pub fn update_post_filter_beta(&mut self, value: f32) {
+        let int = value.to_bits();
+        if self.worker_params.post_filter_beta.load(std::sync::atomic::Ordering::Relaxed) != int {
+            self.worker_params.post_filter_beta
                 .store(int, std::sync::atomic::Ordering::Relaxed);
         }
     }
