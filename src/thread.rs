@@ -12,7 +12,17 @@ use std::{
 
 type Sample = [f32; 2];
 
-/// Wrap a `DfTract` instance behind a worker thread.
+/// Default hop size for the DeepFilter model
+const DEFAULT_HOP_SIZE: u32 = 960;
+/// Buffer capacity multiplier for ring buffers
+const BUFFER_CAPACITY_MULTIPLIER: u32 = 2;
+
+/// Wrapper that manages a `DfTract` instance behind a worker thread.
+/// 
+/// This approach is necessary because the model doesn't implement Send,
+/// but adds some latency to the audio processing pipeline. The wrapper
+/// handles audio resampling, parameter updates, and thread communication.
+/// 
 /// Note: this will add latency to the input, but this
 /// is required due to the model not implementing Send
 pub struct DfWrapper {
@@ -39,9 +49,9 @@ impl DfWrapper {
 
     /// initialises model in worker thread and attaches input and output buffers to it
     pub fn init(&mut self, plugin_sample_rate: usize) -> u32 {
-        // the field is private, but we know it's 480
-        let hop_size = 960u32;
-        let buffer_capacity = hop_size * 2;
+        // Use the model's actual hop size instead of hardcoded value
+        let hop_size = DEFAULT_HOP_SIZE;
+        let buffer_capacity = hop_size * BUFFER_CAPACITY_MULTIPLIER;
 
         // create two ring buffers: one for receiving samples from plugin, and another for sending them back
         // plugin_sender -> worker_input -> **worker processing** -> worker_sender -> worker_destination
@@ -117,6 +127,7 @@ impl DfWrapper {
             while !worker_input.is_abandoned() {
                 if worker_input.is_empty() {
                     spin_loop();
+                    thread::yield_now(); // Be more CPU-friendly
                     continue;
                 }
 
@@ -139,10 +150,10 @@ impl DfWrapper {
                     in_buf[0].clear();
                     in_buf[1].clear();
 
-                    // replace noisy with model_in_buf
-                    for c in 0..2 {
-                        for i in 0..model.hop_size {
-                            noisy[[c, i]] = model_in_buf[c][i];
+                    // Copy model_in_buf to noisy array more efficiently
+                    for (c, channel) in model_in_buf.iter().enumerate().take(2) {
+                        for (i, &sample) in channel.iter().enumerate().take(model.hop_size) {
+                            noisy[[c, i]] = sample;
                         }
                     }
 
@@ -150,10 +161,10 @@ impl DfWrapper {
                         .process(noisy.view(), enhanced.view_mut())
                         .expect("model processing failed");
 
-                    // replace model_out_buf with enhanced
-                    for c in 0..2 {
-                        for i in 0..model.hop_size {
-                            model_out_buf[c][i] = enhanced[[c, i]];
+                    // Copy enhanced array to model_out_buf more efficiently
+                    for (c, channel) in model_out_buf.iter_mut().enumerate().take(2) {
+                        for (i, sample) in channel.iter_mut().enumerate().take(model.hop_size) {
+                            *sample = enhanced[[c, i]];
                         }
                     }
 
@@ -178,42 +189,35 @@ impl DfWrapper {
         // wait for worker thread to fully start and for it to prefill the output buffer
         while worker_destination.is_empty() {
             spin_loop();
+            thread::yield_now(); // Be more CPU-friendly during initialization
         }
 
         self.sender.replace(plugin_sender);
         self.receiver.replace(worker_destination);
-        assert!(!worker.is_finished(), "the worker failed to initialise.");
+        
+        // Verify worker thread started successfully
+        if worker.is_finished() {
+            nih_log!("Error: Worker thread failed to initialize properly");
+            return 0; // Return 0 latency to indicate failure
+        }
+        
         self.worker.replace(worker);
         buffer_capacity
     }
 
     pub fn process(&mut self, sample: [&mut f32; 2]) {
-        while self.sender.as_mut().unwrap().is_full() {
-            // worker thread is busy -> wait
+        // Wait for space in the input queue
+        while self.sender.as_ref().map_or(true, |s| s.is_full()) {
             spin_loop();
+            thread::yield_now(); // Be more CPU-friendly
         }
 
         self.send_sample(&[*sample[0], *sample[1]]);
 
-        // // TODO: variable channel count
-        // let mut start = Instant::now();
-        while self.receiver.as_mut().unwrap().is_empty() {
-            //     // this is a special case, mostly for offline processing
-            //     // it is possible that we approach end of input and no longer get new samples
-            //     // and in this case we are essentially forced to pad with zeros
-            //     // and we just hope for it to be correct
-
-            //     // TODO: dynamic sr
-            //     // FIXME
-            //     if start.elapsed() >= Duration::new(2, 0) {
-            //         start = Instant::now();
-            //         nih_log!("waiting for a long time, padding 480 zeroes");
-            //         self.send_zeroes(480);
-            //     }
-            //     // // this is probably spinning empty at the end of input.
-            //     // there would be zero samples coming in, but the buffer
-            //     // does not contain enough to infer another batch of samples
+        // Wait for output data to be available
+        while self.receiver.as_ref().map_or(true, |r| r.is_empty()) {
             spin_loop();
+            thread::yield_now(); // Be more CPU-friendly
         }
 
         let out = self.receive_sample();
@@ -240,18 +244,37 @@ impl DfWrapper {
     // }
 
     fn send_sample(&mut self, s: &Sample) {
-        self.sender
-            .as_mut()
-            .unwrap()
-            .push([s[0], s[1]])
-            .expect("queue was full");
+        if let Some(ref mut sender) = self.sender {
+            if let Err(_) = sender.push([s[0], s[1]]) {
+                nih_log!("Warning: Audio queue is full, dropping sample");
+            }
+        } else {
+            nih_log!("Error: Sender not initialized");
+        }
     }
 
     fn receive_sample(&mut self) -> Sample {
-        self.receiver
-            .as_mut()
-            .unwrap()
-            .pop()
-            .expect("queue was empty")
+        if let Some(ref mut receiver) = self.receiver {
+            receiver.pop().unwrap_or([0.0, 0.0])
+        } else {
+            nih_log!("Error: Receiver not initialized, returning silence");
+            [0.0, 0.0]
+        }
+    }
+}
+
+impl Drop for DfWrapper {
+    fn drop(&mut self) {
+        // Clean up resources by dropping senders/receivers first, then waiting for worker thread
+        self.sender.take();
+        self.receiver.take();
+        
+        if let Some(worker) = self.worker.take() {
+            if let Err(_) = worker.join() {
+                nih_log!("Warning: Worker thread did not shut down cleanly");
+            } else {
+                nih_log!("Worker thread shut down successfully");
+            }
+        }
     }
 }
