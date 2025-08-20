@@ -4,8 +4,11 @@ version = "0.1.0"
 edition = "2021"
 authors = ["vaisest <your@email.com>"]
 license = "GPL-3.0-or-later"
-homepage = "stupid meme"
-description = "A short description of your plugin"
+homepage = "https://github.com/edsonsantoro/deepfilter-vst"
+description = "A VST3/CLAP audio plugin that uses DeepFilter neural networks for real-time noise reduction"
+repository = "https://github.com/edsonsantoro/deepfilter-vst"
+keywords = ["vst", "clap", "audio", "noise-reduction", "deepfilter"]
+categories = ["multimedia::audio"]
 
 [workspace]
 members = ["xtask"]

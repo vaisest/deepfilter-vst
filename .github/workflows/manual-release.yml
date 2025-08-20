@@ -1,0 +1,171 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+      include_windows:
+        description: 'Include Windows build'
+        type: boolean
+        default: true
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y build-essential pkg-config libasound2-dev libjack-jackd2-dev \
+          libx11-dev libgl1-mesa-dev libxrandr-dev libxcursor-dev libxinerama-dev \
+          libxi-dev libglu1-mesa-dev libx11-xcb-dev
+    
+    - name: Build Linux plugin
+      run: cargo xtask bundle deepfilter-vst --release
+    
+    - name: Prepare Linux artifacts
+      run: |
+        mkdir -p artifacts
+        cp target/bundled/deepfilter-vst.clap artifacts/
+        cp -r target/bundled/deepfilter-vst.vst3 artifacts/
+        tar -czf deepfilter-vst-linux-x64.tar.gz -C artifacts .
+    
+    - name: Upload Linux artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-artifacts
+        path: deepfilter-vst-linux-x64.tar.gz
+
+  build-windows:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.include_windows == 'true'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: x86_64-pc-windows-gnu
+    
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y build-essential pkg-config libasound2-dev libjack-jackd2-dev \
+          libx11-dev libgl1-mesa-dev libxrandr-dev libxcursor-dev libxinerama-dev \
+          libxi-dev libglu1-mesa-dev libx11-xcb-dev mingw-w64
+    
+    - name: Build Windows plugin
+      run: cargo xtask bundle deepfilter-vst --release --target x86_64-pc-windows-gnu
+    
+    - name: Prepare Windows artifacts
+      run: |
+        mkdir -p artifacts
+        cp target/x86_64-pc-windows-gnu/bundled/deepfilter-vst.clap artifacts/
+        cp -r target/x86_64-pc-windows-gnu/bundled/deepfilter-vst.vst3 artifacts/
+        tar -czf deepfilter-vst-windows-x64.tar.gz -C artifacts .
+    
+    - name: Upload Windows artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-artifacts  
+        path: deepfilter-vst-windows-x64.tar.gz
+
+  create-release:
+    needs: [build-linux, build-windows]
+    if: always() && needs.build-linux.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download Linux artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: linux-artifacts
+        path: artifacts/
+    
+    - name: Download Windows artifacts (if built)
+      uses: actions/download-artifact@v4
+      if: github.event.inputs.include_windows == 'true' && needs.build-windows.result == 'success'
+      with:
+        name: windows-artifacts
+        path: artifacts/
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.event.inputs.version }}
+        name: DeepFilter VST ${{ github.event.inputs.version }}
+        body: |
+          # DeepFilter VST Plugin Release ${{ github.event.inputs.version }}
+          
+          A VST3/CLAP audio plugin that uses DeepFilter neural networks for real-time noise reduction.
+          
+          ## What's New
+          
+          - Initial release of DeepFilter VST plugin
+          - Support for VST3 and CLAP formats
+          - Real-time noise reduction using DeepFilter neural networks
+          - 5 configurable parameters for fine-tuning
+          
+          ## Downloads
+          
+          - **Linux (x64)**: Download `deepfilter-vst-linux-x64.tar.gz`
+          - **Windows (x64)**: Download `deepfilter-vst-windows-x64.tar.gz` (if available)
+          
+          ## Installation Instructions
+          
+          ### Linux
+          1. Extract the downloaded archive
+          2. For VST3: Copy `deepfilter-vst.vst3` folder to `~/.vst3/`
+          3. For CLAP: Copy `deepfilter-vst.clap` file to `~/.clap/`
+          
+          ### Windows  
+          1. Extract the downloaded archive
+          2. For VST3: Copy `deepfilter-vst.vst3` folder to `C:\Program Files\Common Files\VST3\`
+          3. For CLAP: Copy `deepfilter-vst.clap` file to your DAW's CLAP plugin directory
+          
+          ## Plugin Parameters
+          
+          The plugin provides these configurable parameters:
+          - **Attenuation Limit**: Maximum noise reduction in dB
+          - **Min Threshold**: Minimum activation threshold
+          - **Max ERB Threshold**: Maximum ERB-based threshold
+          - **Max Threshold**: Maximum activation threshold  
+          - **Post Filter Beta**: Post-processing filter strength
+          
+          ## Usage Tips
+          
+          - Start with default parameters and adjust incrementally
+          - For speech content, use lower Attenuation Limit values (30-50 dB)
+          - For music or complex audio, experiment with Min/Max Threshold and ERB settings
+          - Monitor for over-processing artifacts when using aggressive settings
+          
+          ## System Requirements
+          
+          - Linux: x86_64 with ALSA/JACK support
+          - Windows: x86_64 (Windows 10/11 recommended)
+          - VST3 or CLAP compatible DAW
+          
+          ## Known Issues
+          
+          - This is an early release - expect some rough edges
+          - May require adjustment for optimal performance in different DAWs
+          - Windows version is cross-compiled and may need additional testing
+          
+          Please report issues on the GitHub repository.
+        draft: true
+        files: artifacts/*
+        token: ${{ secrets.GITHUB_TOKEN }}

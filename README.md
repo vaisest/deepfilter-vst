@@ -2,6 +2,28 @@
 
 A VST3/CLAP audio plugin that uses DeepFilter neural networks for real-time noise reduction. This plugin processes audio in a separate worker thread to avoid blocking the audio processing thread.
 
+## Downloads
+
+### Pre-built Releases
+
+Download the latest release from the [Releases](https://github.com/edsonsantoro/deepfilter-vst/releases) page.
+
+Available formats:
+- **Linux (x64)**: VST3 and CLAP formats for Linux systems
+- **Windows (x64)**: VST3 and CLAP formats for Windows systems
+
+### Installation
+
+#### Linux
+1. Extract the downloaded archive
+2. For VST3: Copy `deepfilter-vst.vst3` folder to `~/.vst3/`
+3. For CLAP: Copy `deepfilter-vst.clap` file to `~/.clap/`
+
+#### Windows
+1. Extract the downloaded archive  
+2. For VST3: Copy `deepfilter-vst.vst3` folder to `C:\Program Files\Common Files\VST3\`
+3. For CLAP: Copy `deepfilter-vst.clap` file to your DAW's CLAP plugin directory
+
 ## Dependencies
 
 ### Linux System Dependencies
@@ -62,6 +84,31 @@ cargo xtask bundle deepfilter-vst --release --target x86_64-pc-windows-gnu
 The built plugins will be available in `target/bundled/`:
 - `deepfilter-vst.clap` - CLAP plugin format
 - `deepfilter-vst.vst3` - VST3 plugin format
+
+### Building Release Packages
+
+For local testing of release packages, use the provided build script:
+
+```shell
+# Build Linux version only
+./build-release.sh
+
+# Build both Linux and Windows versions
+./build-release.sh --windows
+```
+
+This will create release packages in the `release-test/` directory.
+
+## Automated Releases
+
+This repository includes GitHub Actions workflows for automated releases:
+
+- **Automatic releases**: Triggered when a version tag is pushed (e.g., `git tag v0.1.0 && git push origin v0.1.0`)
+- **Manual releases**: Use the "Manual Release" workflow in GitHub Actions to create releases on-demand
+
+Both workflows build the plugin for Linux and Windows, create release archives, and publish a draft release with the compiled files ready for download.
+
+For detailed release instructions, see [RELEASE.md](RELEASE.md).
 
 ## Plugin Parameters
 
