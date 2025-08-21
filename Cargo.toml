@@ -41,6 +41,7 @@ nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = [
 ] }
 rtrb = "^0.3.0"
 rubato = "^0.15.0"
+vst = "0.4.0"
 
 [profile.release]
 lto = "thin"
