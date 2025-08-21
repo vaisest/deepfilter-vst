@@ -36,6 +36,7 @@ jobs:
       run: |
         mkdir -p artifacts
         cp target/bundled/deepfilter-vst.clap artifacts/
+        cp target/bundled/deepfilter-vst.so artifacts/
         cp -r target/bundled/deepfilter-vst.vst3 artifacts/
         tar -czf deepfilter-vst-linux-x64.tar.gz -C artifacts .
     
@@ -70,8 +71,9 @@ jobs:
     - name: Prepare Windows artifacts
       run: |
         mkdir -p artifacts
-        cp target/x86_64-pc-windows-gnu/bundled/deepfilter-vst.clap artifacts/
-        cp -r target/x86_64-pc-windows-gnu/bundled/deepfilter-vst.vst3 artifacts/
+        cp target/bundled/deepfilter-vst.clap artifacts/
+        cp target/bundled/deepfilter-vst.dll artifacts/
+        cp -r target/bundled/deepfilter-vst.vst3 artifacts/
         tar -czf deepfilter-vst-windows-x64.tar.gz -C artifacts .
     
     - name: Upload Windows artifacts
