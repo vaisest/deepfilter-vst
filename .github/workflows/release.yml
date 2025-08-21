@@ -86,14 +86,16 @@ jobs:
       run: |
         mkdir -p artifacts
         cp target/bundled/deepfilter-vst.clap artifacts/deepfilter-vst-${{ matrix.artifact_suffix }}.clap
+        cp target/bundled/deepfilter-vst.so artifacts/deepfilter-vst-${{ matrix.artifact_suffix }}.so
         cp -r target/bundled/deepfilter-vst.vst3 artifacts/deepfilter-vst-${{ matrix.artifact_suffix }}.vst3
         
     - name: Prepare artifacts (Windows)
       if: matrix.target == 'x86_64-pc-windows-gnu'
       run: |
         mkdir -p artifacts
-        cp target/${{ matrix.target }}/bundled/deepfilter-vst.clap artifacts/deepfilter-vst-${{ matrix.artifact_suffix }}.clap
-        cp -r target/${{ matrix.target }}/bundled/deepfilter-vst.vst3 artifacts/deepfilter-vst-${{ matrix.artifact_suffix }}.vst3
+        cp target/bundled/deepfilter-vst.clap artifacts/deepfilter-vst-${{ matrix.artifact_suffix }}.clap
+        cp target/bundled/deepfilter-vst.dll artifacts/deepfilter-vst-${{ matrix.artifact_suffix }}.dll
+        cp -r target/bundled/deepfilter-vst.vst3 artifacts/deepfilter-vst-${{ matrix.artifact_suffix }}.vst3
     
     - name: Create archive
       run: |
