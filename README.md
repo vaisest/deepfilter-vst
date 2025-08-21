@@ -1,6 +1,6 @@
 # DeepFilter VST Plugin
 
-A VST3/CLAP audio plugin that uses DeepFilter neural networks for real-time noise reduction. This plugin processes audio in a separate worker thread to avoid blocking the audio processing thread.
+A VST2/VST3/CLAP audio plugin that uses DeepFilter neural networks for real-time noise reduction. This plugin processes audio in a separate worker thread to avoid blocking the audio processing thread.
 
 ## Downloads
 
@@ -9,20 +9,22 @@ A VST3/CLAP audio plugin that uses DeepFilter neural networks for real-time nois
 Download the latest release from the [Releases](https://github.com/edsonsantoro/deepfilter-vst/releases) page.
 
 Available formats:
-- **Linux (x64)**: VST3 and CLAP formats for Linux systems
-- **Windows (x64)**: VST3 and CLAP formats for Windows systems
+- **Linux (x64)**: VST2, VST3 and CLAP formats for Linux systems
+- **Windows (x64)**: VST2, VST3 and CLAP formats for Windows systems
 
 ### Installation
 
 #### Linux
 1. Extract the downloaded archive
-2. For VST3: Copy `deepfilter-vst.vst3` folder to `~/.vst3/`
-3. For CLAP: Copy `deepfilter-vst.clap` file to `~/.clap/`
+2. For VST2: Copy `deepfilter-vst.vst2.so` file to `~/.vst/`
+3. For VST3: Copy `deepfilter-vst.vst3` folder to `~/.vst3/`
+4. For CLAP: Copy `deepfilter-vst.clap` file to `~/.clap/`
 
 #### Windows
 1. Extract the downloaded archive  
-2. For VST3: Copy `deepfilter-vst.vst3` folder to `C:\Program Files\Common Files\VST3\`
-3. For CLAP: Copy `deepfilter-vst.clap` file to your DAW's CLAP plugin directory
+2. For VST2: Copy `deepfilter-vst.vst2.dll` file to your DAW's VST2 plugin directory
+3. For VST3: Copy `deepfilter-vst.vst3` folder to `C:\Program Files\Common Files\VST3\`
+4. For CLAP: Copy `deepfilter-vst.clap` file to your DAW's CLAP plugin directory
 
 ## Dependencies
 
@@ -82,8 +84,9 @@ cargo xtask bundle deepfilter-vst --release --target x86_64-pc-windows-gnu
 ```
 
 The built plugins will be available in `target/bundled/`:
-- `deepfilter-vst.clap` - CLAP plugin format
+- `deepfilter-vst.so` - VST2 plugin format (Linux) / `deepfilter-vst.dll` (Windows)
 - `deepfilter-vst.vst3` - VST3 plugin format
+- `deepfilter-vst.clap` - CLAP plugin format
 
 ### Building Release Packages
 

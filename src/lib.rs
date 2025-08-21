@@ -2,6 +2,14 @@ use nih_plug::prelude::*;
 use std::sync::Arc;
 mod thread;
 
+// VST2 support
+#[macro_use]
+extern crate vst;
+use vst::prelude::{AudioBuffer as VstAudioBuffer, HostCallback, Info as VstInfo, 
+                   Category as VstCategory, PluginParameters as VstPluginParameters};
+use vst::plugin::Plugin as VstPlugin;
+use vst::util::AtomicFloat;
+
 /// VST plugin implementation for DeepFilter noise reduction.
 /// 
 /// This plugin uses the DeepFilter neural network model to reduce noise in audio signals.
@@ -298,5 +306,220 @@ impl ClapPlugin for Vst {
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
 }
 
+// VST2 implementation that reuses the core audio processing logic
+pub struct VstWrapper {
+    model: thread::DfWrapper,
+    params: Arc<VstWrapperParameters>,
+    // Cached parameter values for efficient processing
+    last_attenuation_limit: f32,
+    last_min_thresh: f32,
+    last_max_erb: f32,
+    last_max_thresh: f32,
+    last_post_filter_beta: f32,
+}
+
+/// VST2 parameters wrapper
+pub struct VstWrapperParameters {
+    attenuation_limit: AtomicFloat,
+    min_thresh: AtomicFloat,
+    max_erb: AtomicFloat,
+    max_thresh: AtomicFloat,
+    post_filter_beta: AtomicFloat,
+}
+
+impl Default for VstWrapperParameters {
+    fn default() -> Self {
+        Self {
+            attenuation_limit: AtomicFloat::new(70.0 / 100.0), // Normalize to 0-1 for VST2
+            min_thresh: AtomicFloat::new((-15.0 + 30.0) / 30.0), // Map -30..0 to 0..1
+            max_erb: AtomicFloat::new((35.0 - 10.0) / (50.0 - 10.0)), // Map 10..50 to 0..1
+            max_thresh: AtomicFloat::new((35.0 - 10.0) / (50.0 - 10.0)), // Map 10..50 to 0..1
+            post_filter_beta: AtomicFloat::new(1.0 / 2.0), // Map 0..2 to 0..1
+        }
+    }
+}
+
+impl VstPlugin for VstWrapper {
+    fn new(_host: HostCallback) -> Self {
+        Self {
+            model: thread::DfWrapper::new(70., -15., 35., 35., 1.),
+            params: Arc::new(VstWrapperParameters::default()),
+            last_attenuation_limit: 70.0,
+            last_min_thresh: -15.0,
+            last_max_erb: 35.0,
+            last_max_thresh: 35.0,
+            last_post_filter_beta: 1.0,
+        }
+    }
+
+    fn get_info(&self) -> VstInfo {
+        VstInfo {
+            name: "DeepFilter VST2".to_string(),
+            vendor: "vaisest".to_string(),
+            unique_id: 1337,
+            version: 1,
+            inputs: 2,
+            outputs: 2,
+            parameters: 5,
+            category: VstCategory::Effect,
+            ..Default::default()
+        }
+    }
+
+    fn init(&mut self) {
+        // Initialize the model with a reasonable sample rate
+        let _latency = self.model.init(44100);
+        
+        // Initialize cached parameter values and update model
+        self.last_attenuation_limit = 70.0;
+        self.last_min_thresh = -15.0;
+        self.last_max_erb = 35.0;
+        self.last_max_thresh = 35.0;
+        self.last_post_filter_beta = 1.0;
+        
+        self.model.update_atten_limit(self.last_attenuation_limit);
+        self.model.update_min_thresh(self.last_min_thresh);
+        self.model.update_max_erb(self.last_max_erb);
+        self.model.update_max_thresh(self.last_max_thresh);
+        self.model.update_post_filter_beta(self.last_post_filter_beta);
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        // Re-initialize with new sample rate
+        let _latency = self.model.init(rate as usize);
+    }
+
+    fn set_block_size(&mut self, _size: i64) {
+        // VST2 block size doesn't require special handling for our use case
+    }
+
+    fn process(&mut self, buffer: &mut VstAudioBuffer<f32>) {
+        // Sync parameters from VST2 to the model
+        self.sync_parameters();
+
+        // For stereo processing, we need to collect samples into pairs
+        // The DfWrapper.process expects [&mut f32; 2] (left, right)
+        let num_samples = buffer.samples();
+        let mut channel_iter = buffer.zip();
+        
+        if let Some((left_input, left_output)) = channel_iter.next() {
+            if let Some((right_input, right_output)) = channel_iter.next() {
+                // We have stereo input/output
+                for i in 0..num_samples {
+                    let mut left = left_input[i];
+                    let mut right = right_input[i];
+                    
+                    // Process the sample pair
+                    self.model.process([&mut left, &mut right]);
+                    
+                    // Write back to outputs
+                    left_output[i] = left;
+                    right_output[i] = right;
+                }
+            } else {
+                // Mono input, process as stereo by duplicating
+                for i in 0..num_samples {
+                    let mut left = left_input[i];
+                    let mut right = left_input[i]; // Duplicate for stereo processing
+                    
+                    self.model.process([&mut left, &mut right]);
+                    
+                    left_output[i] = left;
+                }
+            }
+        }
+    }
+
+    fn get_parameter_object(&mut self) -> Arc<dyn VstPluginParameters> {
+        Arc::clone(&self.params) as Arc<dyn VstPluginParameters>
+    }
+}
+
+impl VstWrapper {
+    fn sync_parameters(&mut self) {
+        // Convert VST2 normalized parameters back to original ranges and update the model
+        let atten_limit = self.params.attenuation_limit.get() * 100.0;
+        let min_thresh = (self.params.min_thresh.get() * 30.0) - 30.0;
+        let max_erb = (self.params.max_erb.get() * (50.0 - 10.0)) + 10.0;
+        let max_thresh = (self.params.max_thresh.get() * (50.0 - 10.0)) + 10.0;
+        let post_filter_beta = self.params.post_filter_beta.get() * 2.0;
+
+        // Only update if values have changed (for efficiency)
+        if (atten_limit - self.last_attenuation_limit).abs() > f32::EPSILON {
+            self.model.update_atten_limit(atten_limit);
+            self.last_attenuation_limit = atten_limit;
+        }
+        
+        if (min_thresh - self.last_min_thresh).abs() > f32::EPSILON {
+            self.model.update_min_thresh(min_thresh);
+            self.last_min_thresh = min_thresh;
+        }
+        
+        if (max_erb - self.last_max_erb).abs() > f32::EPSILON {
+            self.model.update_max_erb(max_erb);
+            self.last_max_erb = max_erb;
+        }
+        
+        if (max_thresh - self.last_max_thresh).abs() > f32::EPSILON {
+            self.model.update_max_thresh(max_thresh);
+            self.last_max_thresh = max_thresh;
+        }
+        
+        if (post_filter_beta - self.last_post_filter_beta).abs() > f32::EPSILON {
+            self.model.update_post_filter_beta(post_filter_beta);
+            self.last_post_filter_beta = post_filter_beta;
+        }
+    }
+}
+
+impl VstPluginParameters for VstWrapperParameters {
+    fn get_parameter(&self, index: i32) -> f32 {
+        match index {
+            0 => self.attenuation_limit.get(),
+            1 => self.min_thresh.get(),
+            2 => self.max_erb.get(),
+            3 => self.max_thresh.get(),
+            4 => self.post_filter_beta.get(),
+            _ => 0.0,
+        }
+    }
+
+    fn set_parameter(&self, index: i32, value: f32) {
+        match index {
+            0 => self.attenuation_limit.set(value),
+            1 => self.min_thresh.set(value),
+            2 => self.max_erb.set(value),
+            3 => self.max_thresh.set(value),
+            4 => self.post_filter_beta.set(value),
+            _ => {}
+        }
+    }
+
+    fn get_parameter_text(&self, index: i32) -> String {
+        match index {
+            0 => format!("{:.1} dB", self.attenuation_limit.get() * 100.0),
+            1 => format!("{:.1} dB", (self.min_thresh.get() * 30.0) - 30.0),
+            2 => format!("{:.1} dB", (self.max_erb.get() * (50.0 - 10.0)) + 10.0),
+            3 => format!("{:.1} dB", (self.max_thresh.get() * (50.0 - 10.0)) + 10.0),
+            4 => format!("{:.2}", self.post_filter_beta.get() * 2.0),
+            _ => "".to_string(),
+        }
+    }
+
+    fn get_parameter_name(&self, index: i32) -> String {
+        match index {
+            0 => "Attenuation Limit".to_string(),
+            1 => "Min Threshold".to_string(),
+            2 => "Max ERB Threshold".to_string(),
+            3 => "Max Threshold".to_string(),
+            4 => "Post Filter Beta".to_string(),
+            _ => "".to_string(),
+        }
+    }
+}
+
 nih_export_vst3!(Vst);
 nih_export_clap!(Vst);
+
+// VST2 export
+plugin_main!(VstWrapper);
