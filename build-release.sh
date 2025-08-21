@@ -23,6 +23,7 @@ cargo xtask bundle deepfilter-vst --release
 echo "Copying Linux artifacts..."
 mkdir -p release-test/linux
 cp target/bundled/deepfilter-vst.clap release-test/linux/
+cp target/bundled/deepfilter-vst.so release-test/linux/deepfilter-vst.vst2.so
 cp -r target/bundled/deepfilter-vst.vst3 release-test/linux/
 
 # Create Linux archive
@@ -54,6 +55,7 @@ if [ "$1" = "--windows" ] || [ "$1" = "-w" ]; then
     echo "Copying Windows artifacts..."
     mkdir -p release-test/windows
     cp target/x86_64-pc-windows-gnu/bundled/deepfilter-vst.clap release-test/windows/
+    cp target/x86_64-pc-windows-gnu/bundled/deepfilter-vst.dll release-test/windows/deepfilter-vst.vst2.dll
     cp -r target/x86_64-pc-windows-gnu/bundled/deepfilter-vst.vst3 release-test/windows/
     
     # Create Windows archive
@@ -81,5 +83,6 @@ done
 echo "Build complete! Archives are in the release-test/ directory."
 echo ""
 echo "To test installation:"
+echo "  Linux VST2: tar -xzf release-test/deepfilter-vst-linux-x64.tar.gz && mv deepfilter-vst.vst2.so ~/.vst/"
 echo "  Linux VST3: tar -xzf release-test/deepfilter-vst-linux-x64.tar.gz && mv deepfilter-vst.vst3 ~/.vst3/"
 echo "  Linux CLAP: tar -xzf release-test/deepfilter-vst-linux-x64.tar.gz && mv deepfilter-vst.clap ~/.clap/"
