@@ -1,7 +1,9 @@
-// use nih_plug::prelude::*;
+use nih_plug::prelude::*;
 
-// use vst_filter::Vst;
+use deepfilter_vst::Vst;
 
 fn main() {
-    // nih_export_standalone::<Vst>();
+    // this doesn't really seem to work. I'm unable to get wasapi to work even
+    // if I add a mono input to the plugin
+    nih_export_standalone::<Vst>();
 }

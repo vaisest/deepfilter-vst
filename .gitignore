@@ -27,3 +27,4 @@ Cargo.lock
 *.log
 mypy_cache/
 test.py
+*.exe

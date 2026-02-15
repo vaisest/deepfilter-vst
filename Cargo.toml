@@ -18,6 +18,8 @@ path = "src/main.rs"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
+audioadapter = "2.0.0"
+audioadapter-buffers = "2.0.0"
 # fork due to dependency version issues
 deep_filter = { git = "https://github.com/vaisest/DeepFilterNet.git", default-features = false, features = [
     "tract",
@@ -37,7 +39,7 @@ nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = [
     "standalone",
 ] }
 rtrb = "^0.3.0"
-rubato = "^0.15.0"
+rubato = "^1.0"
 
 [profile.release]
 lto = "thin"

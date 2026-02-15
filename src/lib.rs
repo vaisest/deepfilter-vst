@@ -67,9 +67,8 @@ impl Plugin for Vst {
 
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
-    // The first audio IO layout is used as the default. The other layouts may be selected either
-    // explicitly or automatically by the host or the user depending on the plugin API/backend.
-    // TODO: add mono
+    // This doesn't seem to require a mono layout for audacity. I'm unsure if
+    // this is the case in other software.
     const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
         main_input_channels: NonZeroU32::new(2),
         main_output_channels: NonZeroU32::new(2),
@@ -77,9 +76,6 @@ impl Plugin for Vst {
         aux_input_ports: &[],
         aux_output_ports: &[],
 
-        // Individual ports and the layout as a whole can be named here. By default these names
-        // are generated as needed. This layout will be called 'Stereo', while a layout with
-        // only one input and output channel would be called 'Mono'.
         names: PortNames::const_default(),
     }];
 
@@ -151,11 +147,13 @@ impl Plugin for Vst {
 }
 
 impl Vst3Plugin for Vst {
-    const VST3_CLASS_ID: [u8; 16] = *b"fooofooofooofooo";
+    const VST3_CLASS_ID: [u8; 16] = *b"deepfilter-vst__";
 
-    // And also don't forget to change these categories
-    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] =
-        &[Vst3SubCategory::Fx, Vst3SubCategory::Dynamics];
+    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] = &[
+        Vst3SubCategory::Dynamics,
+        Vst3SubCategory::Filter,
+        Vst3SubCategory::Fx,
+    ];
 }
 
 impl ClapPlugin for Vst {

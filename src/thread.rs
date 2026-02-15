@@ -1,9 +1,11 @@
+use audioadapter::{Adapter, AdapterMut};
+use audioadapter_buffers::{direct::SequentialSliceOfVecs, owned::SequentialOwned};
 use core::f32;
 use df::tract::*;
 use ndarray::Array2;
 use nih_plug::nih_log;
 use rtrb::RingBuffer;
-use rubato::{FftFixedIn, FftFixedOut, Resampler};
+use rubato::{Fft, Resampler};
 use std::{
     hint::spin_loop,
     sync::{atomic::AtomicU32, Arc},
@@ -23,8 +25,8 @@ pub struct DfWrapper {
 }
 
 struct IOResampler {
-    input: FftFixedOut<f32>,
-    output: FftFixedIn<f32>,
+    input: Fft<f32>,
+    output: Fft<f32>,
 }
 
 impl DfWrapper {
@@ -69,32 +71,34 @@ impl DfWrapper {
 
             // todo: resampling optional when incoming sr is right
             let mut resampler = IOResampler {
-                input: FftFixedOut::new(
+                input: Fft::<f32>::new(
                     plugin_sample_rate,
                     model.sr,
                     model.hop_size,
-                    1, // no clue what this subchunk thing is
+                    1, // "It is recommended to set sub_chunks to 1 unless this leads to an unacceptably large delay."
                     2,
+                    rubato::FixedSync::Output,
                 )
-                .expect("failed to create worker input resampler"),
-                output: FftFixedIn::new(model.sr, plugin_sample_rate, model.hop_size, 1, 2)
-                    .expect("failed to create worker output resampler"),
+                .expect("input resampler should have been initialised"),
+                output: Fft::<f32>::new(
+                    model.sr,
+                    plugin_sample_rate,
+                    model.hop_size,
+                    1,
+                    2,
+                    rubato::FixedSync::Input,
+                )
+                .expect("output resampler should have been initialised"),
             };
 
-            nih_log!(
-                "worker thread {:?} initialised resampler, frames needed in {}",
-                thread::current().id(),
-                resampler.input.input_frames_next(),
-            );
-
-            // in_buf -> model_in_buf -> **model processing** -> model_out_buf -> out_buf
-            // only in_buf is not filled by default as it has input samples appended to it
-            // todo: fill it and use idx variable
-            let mut in_buf = resampler.input.input_buffer_allocate(false);
-            // resampler output has to already contain the amount of samples that will be output
-            let mut model_in_buf = resampler.input.output_buffer_allocate(true);
-            let mut model_out_buf = resampler.output.input_buffer_allocate(true);
-            let mut out_buf = resampler.output.output_buffer_allocate(true);
+            // in_buf -> **resample** -> model_in_buf -> **model processing** -> model_out_buf -> **resample** -> out_buf
+            let mut in_buf = [
+                Vec::with_capacity(resampler.input.input_frames_max()),
+                Vec::with_capacity(resampler.input.input_frames_max()),
+            ];
+            let mut model_in_buf = SequentialOwned::new(0.0f32, 2, model.hop_size);
+            let mut model_out_buf = SequentialOwned::new(0.0f32, 2, model.hop_size);
+            let mut out_buf = SequentialOwned::new(0.0f32, 2, resampler.output.output_frames_max());
 
             // model uses ndarray, reads from in, writes to mutable out
             let mut noisy = Array2::<f32>::zeros((2, model.hop_size));
@@ -120,6 +124,7 @@ impl DfWrapper {
                     continue;
                 }
 
+                // update attenuation limit
                 let new_param = f32::from_bits(param.load(std::sync::atomic::Ordering::Relaxed));
                 if new_param != current_atten_lim {
                     model.set_atten_lim(new_param);
@@ -132,9 +137,11 @@ impl DfWrapper {
 
                 if in_buf[0].len() == resampler.input.input_frames_next() {
                     // resample input, which should give us hop_size amount of samples in model_in_buf
+                    let input_adapter =
+                        SequentialSliceOfVecs::new(&in_buf, 2, in_buf[0].len()).unwrap();
                     resampler
                         .input
-                        .process_into_buffer(&in_buf, &mut model_in_buf, None)
+                        .process_into_buffer(&input_adapter, &mut model_in_buf, None)
                         .expect("error while resampling input");
                     in_buf[0].clear();
                     in_buf[1].clear();
@@ -142,7 +149,7 @@ impl DfWrapper {
                     // replace noisy with model_in_buf
                     for c in 0..2 {
                         for i in 0..model.hop_size {
-                            noisy[[c, i]] = model_in_buf[c][i];
+                            noisy[[c, i]] = model_in_buf.read_sample(c, i).unwrap();
                         }
                     }
 
@@ -153,7 +160,7 @@ impl DfWrapper {
                     // replace model_out_buf with enhanced
                     for c in 0..2 {
                         for i in 0..model.hop_size {
-                            model_out_buf[c][i] = enhanced[[c, i]];
+                            model_out_buf.write_sample(c, i, &enhanced[[c, i]]);
                         }
                     }
 
@@ -166,7 +173,10 @@ impl DfWrapper {
 
                     for i in 0..samples_out_count {
                         worker_sender
-                            .push([out_buf[0][i], out_buf[1][i]])
+                            .push([
+                                out_buf.read_sample(0, i).unwrap(),
+                                out_buf.read_sample(1, i).unwrap(),
+                            ])
                             .expect("worker_sender push failed");
                     }
                 }
@@ -195,24 +205,7 @@ impl DfWrapper {
 
         self.send_sample(&[*sample[0], *sample[1]]);
 
-        // // TODO: variable channel count
-        // let mut start = Instant::now();
         while self.receiver.as_mut().unwrap().is_empty() {
-            //     // this is a special case, mostly for offline processing
-            //     // it is possible that we approach end of input and no longer get new samples
-            //     // and in this case we are essentially forced to pad with zeros
-            //     // and we just hope for it to be correct
-
-            //     // TODO: dynamic sr
-            //     // FIXME
-            //     if start.elapsed() >= Duration::new(2, 0) {
-            //         start = Instant::now();
-            //         nih_log!("waiting for a long time, padding 480 zeroes");
-            //         self.send_zeroes(480);
-            //     }
-            //     // // this is probably spinning empty at the end of input.
-            //     // there would be zero samples coming in, but the buffer
-            //     // does not contain enough to infer another batch of samples
             spin_loop();
         }
 
@@ -228,16 +221,6 @@ impl DfWrapper {
                 .store(int, std::sync::atomic::Ordering::Relaxed);
         }
     }
-
-    // fn send_zeroes(&mut self, n: usize) {
-    //     assert!(
-    //         self.sender.is_some(),
-    //         "ringbuffer does not exist when trying to send zeroes"
-    //     );
-    //     for _ in 0..n {
-    //         self.send_sample(&[0.0, 0.0]);
-    //     }
-    // }
 
     fn send_sample(&mut self, s: &Sample) {
         self.sender
