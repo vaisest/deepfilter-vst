@@ -19,17 +19,17 @@ crate-type = ["cdylib", "lib"]
 
 [dependencies]
 # fork due to dependency version issues
-deep_filter = { git = "https://github.com/vaisest/DeepFilterNet.git", default-features = false, features = [
-    "tract",
-    # there are two models available. The regular one and an "LL" (presumably
-    # low latency) version which does not have lookahead, but has less latency
-    # The LL version would seem like a smart choice to use here, but it seems to
-    # be about twice as slow
+# deep_filter = { git = "https://github.com/vaisest/DeepFilterNet.git", default-features = false, features = [
+#     "tract",
+#     # there are two models available. The regular one and an "LL" (presumably
+#     # low latency) version which does not have lookahead, but has less latency
+#     # The LL version would seem like a smart choice to use here, but it seems to
+#     # be about twice as slow
 
-    # TODO: add as feature
-    "default-model",
-] }
-ndarray = "^0.15"
+#     # TODO: add as feature
+#     "default-model",
+# ] }
+ndarray = "^0.17"
 # Remove the `assert_process_allocs` feature to allow allocations on the audio
 # thread in debug builds.
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = [
@@ -38,6 +38,7 @@ nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = [
 ] }
 rtrb = "^0.3.0"
 rubato = "^0.15.0"
+ort = "=2.0.0-rc.11"
 
 [profile.release]
 lto = "thin"

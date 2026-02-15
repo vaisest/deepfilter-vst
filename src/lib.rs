@@ -1,10 +1,15 @@
 use nih_plug::prelude::*;
 use std::sync::Arc;
 mod thread;
+use ort::{
+    session::{builder::GraphOptimizationLevel, Session},
+    value::Tensor,
+};
 
 pub struct Vst {
-    model: thread::DfWrapper,
+    // model: thread::DfWrapper,
     params: Arc<VstParams>,
+    model: Session,
 }
 
 #[derive(Params)]
@@ -28,8 +33,16 @@ struct VstParams {
 impl Default for Vst {
     fn default() -> Self {
         Self {
-            model: thread::DfWrapper::new(70.),
+            // model: thread::DfWrapper::new(70.),
             params: Arc::new(VstParams::default()),
+            model: Session::builder()
+                .unwrap()
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+                .unwrap()
+                .with_intra_threads(4)
+                .unwrap()
+                .commit_from_file("src/model/enc.onnx")
+                .unwrap(),
         }
     }
 }
@@ -113,16 +126,52 @@ impl Plugin for Vst {
             buffer_config.max_buffer_size
         );
 
+        let mut _model = Session::builder()
+            .unwrap()
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .unwrap()
+            .with_intra_threads(4)
+            .unwrap()
+            .commit_from_file("src/model/enc.onnx")
+            .unwrap();
+
+        let erb_tensor = Tensor::from_array(ndarray::Array4::<f32>::zeros((1, 1, 1, 32))).unwrap();
+        let spec_tensor = Tensor::from_array(ndarray::Array4::<f32>::zeros((1, 2, 1, 96))).unwrap();
+        let outputs = _model
+            .run(ort::inputs!["feat_erb" => erb_tensor, "feat_spec" => spec_tensor])
+            .unwrap();
+        let predictions = outputs["emb"].try_extract_array::<f32>().unwrap();
+        let predictions = outputs["lsnr"].try_extract_scalar::<f32>().unwrap();
+        let predictions = outputs["c0"].try_extract_array::<f32>().unwrap();
+
+        // let mut _model2 = Session::builder()
+        //     .unwrap()
+        //     .with_optimization_level(GraphOptimizationLevel::Level3)
+        //     .unwrap()
+        //     .with_intra_threads(4)
+        //     .unwrap()
+        //     .commit_from_file("src/model/df_dec.onnx")
+        //     .unwrap();
+
+        // let mut _model3 = Session::builder()
+        //     .unwrap()
+        //     .with_optimization_level(GraphOptimizationLevel::Level3)
+        //     .unwrap()
+        //     .with_intra_threads(4)
+        //     .unwrap()
+        //     .commit_from_file("src/model/erb_dec.onnx")
+        //     .unwrap();
+
         nih_log!(
             "plugin sr: {}, plugin params: {:?}",
             buffer_config.sample_rate,
             self.params.attenuation_limit
         );
 
-        let latency = self.model.init(buffer_config.sample_rate as usize);
-        context.set_latency_samples(latency);
-        self.model
-            .update_atten_limit(self.params.attenuation_limit.value());
+        // let latency = self.model.init(buffer_config.sample_rate as usize);
+        // context.set_latency_samples(latency);
+        // self.model
+        //     .update_atten_limit(self.params.attenuation_limit.value());
 
         true
     }
@@ -133,14 +182,14 @@ impl Plugin for Vst {
         _aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        self.model
-            .update_atten_limit(self.params.attenuation_limit.value());
-        // could probably use iter_blocks instead?
-        for channel_samples in buffer.iter_samples() {
-            let mut it = channel_samples.into_iter();
+        // self.model
+        //     .update_atten_limit(self.params.attenuation_limit.value());
+        // // could probably use iter_blocks instead?
+        // for channel_samples in buffer.iter_samples() {
+        //     let mut it = channel_samples.into_iter();
 
-            self.model.process([it.next().unwrap(), it.next().unwrap()]);
-        }
+        //     self.model.process([it.next().unwrap(), it.next().unwrap()]);
+        // }
 
         ProcessStatus::Normal
     }

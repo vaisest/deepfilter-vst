@@ -1,7 +1,10 @@
-// use nih_plug::prelude::*;
+use nih_plug::prelude::*;
 
-// use vst_filter::Vst;
+use deepfilter_vst::Vst;
 
 fn main() {
-    // nih_export_standalone::<Vst>();
+    let success = nih_export_standalone::<Vst>();
+    if !success {
+        println!("plugin errored or failed to initialise");
+    }
 }
