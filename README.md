@@ -1,4 +1,4 @@
-# Vst-Filter
+# Deepfilter-VST
 
 ## Building
 
@@ -8,4 +8,4 @@ After installing [Rust](https://rustup.rs/), you can compile deepfilter-vst as f
 cargo xtask bundle deepfilter-vst --release
 ```
 
-This project is very much a WIP, but the plugin should work. It does not yet have any configuration and hasn't been tested thoroughly.
+This project is not very widely tested, but it should work. It does not yet have advanced configuration available. The only controls available are the attenuation limit, which determines how much the model is allowed to attenuate the incoming signal. This limit should not be set too low or the plugin will not do anything.
