@@ -1,4 +1,4 @@
-use nih_plug::prelude::*;
+use nice_plug::prelude::*;
 use std::sync::Arc;
 mod thread;
 
@@ -92,24 +92,26 @@ impl Plugin for Vst {
     // documentation for more information. `()` means that the plugin does not have any background
     // tasks.
     type BackgroundTask = ();
+    // The plugin does not have a GUI.
+    type Editor = ();
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
 
-    fn initialize(
+    fn activate(
         &mut self,
         _audio_io_layout: &AudioIOLayout,
         buffer_config: &BufferConfig,
-        context: &mut impl InitContext<Self>,
+        context: &mut impl ActivateContext<Self>,
     ) -> bool {
-        nih_log!(
+        nice_log!(
             "buffer_size: {:?}-{:?}",
             buffer_config.min_buffer_size,
             buffer_config.max_buffer_size
         );
 
-        nih_log!(
+        nice_log!(
             "plugin sr: {}, plugin params: {:?}",
             buffer_config.sample_rate,
             self.params.attenuation_limit
@@ -142,7 +144,6 @@ impl Plugin for Vst {
     }
 
     fn deactivate(&mut self) {
-        nih_log!("deactivated lol");
     }
 }
 
@@ -164,5 +165,5 @@ impl ClapPlugin for Vst {
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
 }
 
-nih_export_vst3!(Vst);
-nih_export_clap!(Vst);
+nice_export_vst3!(Vst);
+nice_export_clap!(Vst);

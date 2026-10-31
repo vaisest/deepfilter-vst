@@ -15,4 +15,4 @@ This project is not very widely tested, but it should work. It does not yet have
 This plugin should be a decent alternative to RNNoise, which doesn't exactly have the best results in my own experience. The model used however is much more demanding.  
 In my personal testing a properly compiled RNNoise plugin was about 3 times as performant as this plugin. I would recommend testing both options. If you notice that this plugin has better results, it should still be real time capable on modern CPUs.
 
-NIH-Plug also supports CLAP plugins, but I have zero experience using CLAP, and it is mostly untested. Regardless, it should be automatically built alongside the VST plugin.
+nice-plug also supports CLAP plugins, but I have zero experience using CLAP, and it is mostly untested. Regardless, it should be automatically built alongside the VST plugin.

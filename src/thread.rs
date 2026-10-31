@@ -3,7 +3,7 @@ use audioadapter_buffers::{direct::SequentialSliceOfVecs, owned::SequentialOwned
 use core::f32;
 use df::tract::*;
 use ndarray::Array2;
-use nih_plug::nih_log;
+use nice_plug::nice_log;
 use rtrb::RingBuffer;
 use rubato::{Fft, Resampler};
 use std::{
@@ -65,7 +65,7 @@ impl DfWrapper {
             model.min_db_thresh = -15.;
             model.max_db_erb_thresh = 35.;
             model.max_db_df_thresh = 35.;
-            nih_log!("atten lim set to: {current_atten_lim}");
+            nice_log!("atten lim set to: {current_atten_lim}");
 
             // model.set_pf_beta(1.);
 
@@ -104,7 +104,7 @@ impl DfWrapper {
             let mut noisy = Array2::<f32>::zeros((2, model.hop_size));
             let mut enhanced = noisy.clone();
 
-            nih_log!(
+            nice_log!(
                 "worker thread {:?} starting with model sr: {} and atten_lim: {:?}",
                 thread::current().id(),
                 model.sr,
@@ -112,7 +112,7 @@ impl DfWrapper {
             );
 
             // Fill the initial output buffer with zeroes
-            nih_log!("sending {} zeroes...", buffer_capacity);
+            nice_log!("sending {} zeroes...", buffer_capacity);
             for _ in 0..(buffer_capacity) {
                 worker_sender.push([0.0; 2]).unwrap();
             }
@@ -182,7 +182,7 @@ impl DfWrapper {
                 }
             }
 
-            nih_log!("worker thread {:?} exiting...", thread::current().id());
+            nice_log!("worker thread {:?} exiting...", thread::current().id());
         });
 
         // wait for worker thread to fully start and for it to prefill the output buffer
