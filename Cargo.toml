@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["vaisest <your@email.com>"]
 license = "GPL-3.0-or-later"
-homepage = "stupid meme"
+homepage = ""
 description = "A short description of your plugin"
 
 [workspace]

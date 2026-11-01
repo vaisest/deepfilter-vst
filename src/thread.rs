@@ -13,12 +13,21 @@ use std::{
     hint::spin_loop,
     sync::{
         atomic::{AtomicU32, Ordering},
-        Arc,
+        mpsc, Arc,
     },
     thread,
 };
 
 type Sample = [f32; 2];
+
+/// Sample rate and hop size of the bundled model. `DfTract` isn't `Send`, so it can only be
+/// created in the worker thread, but these are needed to set up the resamplers and queues before
+/// that.
+const MODEL_SR: usize = 48000;
+const MODEL_HOP: usize = 480;
+/// How many hops worth of time the worker gets to process a chunk before the audio thread has to
+/// wait for it. This is latency, so smaller is better as long as the worker keeps up.
+const WORKER_HOPS: usize = 2;
 
 /// Model parameters that can be changed while the worker thread is running
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -41,7 +50,7 @@ impl ModelSettings {
 }
 
 /// `ModelSettings` stored as f32 bits so it can be shared with the worker without locking.
-/// Fields are updated individually, but a partially updated read is corrected on the next hop.
+/// The fields are updated individually, but a partially updated read is corrected on the next hop.
 struct SharedSettings([AtomicU32; 5]);
 
 impl SharedSettings {
@@ -96,6 +105,30 @@ struct IOResampler {
     output: Fft<f32>,
 }
 
+impl IOResampler {
+    fn new(plugin_sample_rate: usize) -> Result<Self, rubato::ResamplerConstructionError> {
+        // todo: resampling optional when incoming sr is right
+        Ok(Self {
+            input: Fft::<f32>::new(
+                plugin_sample_rate,
+                MODEL_SR,
+                MODEL_HOP,
+                1, // "It is recommended to set sub_chunks to 1 unless this leads to an unacceptably large delay."
+                2,
+                rubato::FixedSync::Output,
+            )?,
+            output: Fft::<f32>::new(
+                MODEL_SR,
+                plugin_sample_rate,
+                MODEL_HOP,
+                1,
+                2,
+                rubato::FixedSync::Input,
+            )?,
+        })
+    }
+}
+
 impl DfWrapper {
     pub fn new(settings: ModelSettings) -> Self {
         Self {
@@ -112,48 +145,48 @@ impl DfWrapper {
     pub fn init(&mut self, plugin_sample_rate: usize) -> Option<u32> {
         self.stop();
 
-        // the field is private, but we know it's 480
-        let hop_size = 960u32;
-        let buffer_capacity = hop_size * 2;
+        let mut resampler = match IOResampler::new(plugin_sample_rate) {
+            Ok(resampler) => resampler,
+            Err(e) => {
+                nice_log!("failed to create resamplers: {e}");
+                return None;
+            }
+        };
+
+        // The worker only produces output once it has a full chunk of input, but the audio thread
+        // needs an output sample for every input sample. The output queue is prefilled with
+        // silence to cover one chunk plus some time for the worker to process it.
+        let chunk_size = resampler.input.input_frames_max();
+        let prefill = chunk_size * (1 + WORKER_HOPS);
 
         // create two ring buffers: one for receiving samples from plugin, and another for sending them back
         // plugin_sender -> worker_input -> **worker processing** -> worker_sender -> worker_destination
-        let (plugin_sender, mut worker_input) = RingBuffer::<Sample>::new(buffer_capacity as usize);
+        let (plugin_sender, mut worker_input) = RingBuffer::<Sample>::new(prefill + chunk_size);
         let (mut worker_sender, worker_destination) =
-            RingBuffer::<Sample>::new(buffer_capacity as usize);
+            RingBuffer::<Sample>::new(prefill + resampler.output.output_frames_max());
 
+        let resampler_delay = (
+            resampler.input.output_delay(),
+            resampler.output.output_delay(),
+        );
         let shared_settings = self.settings.clone();
+        // the worker sends the model's delay once it has started
+        let (ready_sender, ready_receiver) = mpsc::channel();
 
         let worker = thread::spawn(move || {
             let mut model = DfTract::new(DfParams::default(), &RuntimeParams::default_with_ch(2))
                 .expect("initialising df failed");
+            assert_eq!(
+                (model.sr, model.hop_size),
+                (MODEL_SR, MODEL_HOP),
+                "model sample rate and hop size should match the constants"
+            );
+            let model_delay = model.fft_size - model.hop_size + model.lookahead * model.hop_size;
 
             // set initial parameters
             let mut current_settings = shared_settings.load();
             current_settings.apply(&mut model);
             nice_log!("model settings: {current_settings:?}");
-
-            // todo: resampling optional when incoming sr is right
-            let mut resampler = IOResampler {
-                input: Fft::<f32>::new(
-                    plugin_sample_rate,
-                    model.sr,
-                    model.hop_size,
-                    1, // "It is recommended to set sub_chunks to 1 unless this leads to an unacceptably large delay."
-                    2,
-                    rubato::FixedSync::Output,
-                )
-                .expect("input resampler should have been initialised"),
-                output: Fft::<f32>::new(
-                    model.sr,
-                    plugin_sample_rate,
-                    model.hop_size,
-                    1,
-                    2,
-                    rubato::FixedSync::Input,
-                )
-                .expect("output resampler should have been initialised"),
-            };
 
             // in_buf -> **resample** -> model_in_buf -> **model processing** -> model_out_buf -> **resample** -> out_buf
             let mut in_buf = [
@@ -186,10 +219,12 @@ impl DfWrapper {
                 };
 
             // Fill the initial output buffer with zeroes
-            nice_log!("sending {} zeroes...", buffer_capacity);
-            for _ in 0..(buffer_capacity) {
+            nice_log!("sending {prefill} zeroes...");
+            for _ in 0..prefill {
                 worker_sender.push([0.0; 2]).unwrap();
             }
+            // init may have given up waiting if it's been dropped, which is fine
+            let _ = ready_sender.send(model_delay);
 
             // as long as the ring buffer exists, process new data
             while !worker_input.is_abandoned() {
@@ -264,19 +299,27 @@ impl DfWrapper {
         });
 
         // wait for worker thread to fully start and for it to prefill the output buffer
-        while worker_destination.is_empty() {
-            if worker.is_finished() {
-                let _ = worker.join();
-                return None;
-            }
-            spin_loop();
-        }
+        let Ok(model_delay) = ready_receiver.recv() else {
+            // the worker died before it was ready, which drops the channel
+            let _ = worker.join();
+            return None;
+        };
+
+        // everything before the output resampler runs at the model's sample rate
+        let (input_resampler_delay, output_resampler_delay) = resampler_delay;
+        let model_rate_delay =
+            ((input_resampler_delay + model_delay) * plugin_sample_rate).div_ceil(MODEL_SR);
+        let latency = prefill + model_rate_delay + output_resampler_delay;
+        nice_log!(
+            "latency: {latency} samples (prefill {prefill}, model {model_delay} at {MODEL_SR} Hz, \
+             resamplers {input_resampler_delay} at {MODEL_SR} Hz + {output_resampler_delay})"
+        );
 
         self.sender.replace(plugin_sender);
         self.receiver.replace(worker_destination);
         self.worker.replace(worker);
         self.worker_died = false;
-        Some(buffer_capacity)
+        Some(latency as u32)
     }
 
     /// Replaces the sample with a processed one. If the worker thread has died, for example due to
