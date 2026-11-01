@@ -1,6 +1,8 @@
 # Deepfilter-VST
 
-This repository contains a VST3 and CLAP plug-in for the [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) machine learning model, as the original model was only implemented as a LADSPA plugin. In some of my testing, this plugin had much improved performance compared to the LADSPA plugin, although I don't see a reason for this as the same model is used for both.
+This repository contains a VST3 and CLAP plug-in for the [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) machine learning model, as the original model was only implemented as a LADSPA plugin. This should have very similar performance to the LADSPA plugin as it uses the same model processing implementation. However, this does NOT use the LL version of the model by default, which has much worse throughput, but lower latency.
+
+Compared to an optimised AVX2 build of (at least previously the released plugin had many optimisations disabled) RNNoise ([noise-suppression-for-voice](https://github.com/werman/noise-suppression-for-voice)) this has about 3x the CPU load.
 
 ![An example image of the plugin](example.png)
 
@@ -20,7 +22,7 @@ The plugin has a small editor with a slider for each parameter. Hovering over a 
 
 The plugin has a stereo input and output. Any sample rate works, as the audio is resampled to the model's 48 kHz internally.
 
-The plugin adds about 80 ms of latency. This comes from the model itself (30 ms), the resamplers (10 ms) and a buffer that gives the model time to run on a separate thread (40 ms). The buffer size is not dynamically configurable, but can technically be changed.
+The plugin adds about 70 ms of latency. This comes from the model itself (30 ms), the resamplers (10 ms) and a buffer that gives the model time to run on a separate thread (30 ms). The buffer size is not dynamically configurable, but can technically be changed.
 
 If the model fails for any reason, the plugin passes the audio through unprocessed.
 
