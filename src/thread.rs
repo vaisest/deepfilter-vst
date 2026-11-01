@@ -8,11 +8,73 @@ use rtrb::RingBuffer;
 use rubato::{Fft, Resampler};
 use std::{
     hint::spin_loop,
-    sync::{atomic::AtomicU32, Arc},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
     thread,
 };
 
 type Sample = [f32; 2];
+
+/// Model parameters that can be changed while the worker thread is running
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct ModelSettings {
+    pub atten_lim: f32,
+    pub min_db_thresh: f32,
+    pub max_db_erb_thresh: f32,
+    pub max_db_df_thresh: f32,
+    pub post_filter_beta: f32,
+}
+
+impl ModelSettings {
+    fn apply(&self, model: &mut DfTract) {
+        model.set_atten_lim(self.atten_lim);
+        model.min_db_thresh = self.min_db_thresh;
+        model.max_db_erb_thresh = self.max_db_erb_thresh;
+        model.max_db_df_thresh = self.max_db_df_thresh;
+        model.set_pf_beta(self.post_filter_beta);
+    }
+}
+
+/// `ModelSettings` stored as f32 bits so it can be shared with the worker without locking.
+/// Fields are updated individually, but a partially updated read is corrected on the next hop.
+struct SharedSettings([AtomicU32; 5]);
+
+impl SharedSettings {
+    fn new(settings: ModelSettings) -> Self {
+        let s = Self(Default::default());
+        s.store(settings);
+        s
+    }
+
+    fn store(&self, settings: ModelSettings) {
+        let values = [
+            settings.atten_lim,
+            settings.min_db_thresh,
+            settings.max_db_erb_thresh,
+            settings.max_db_df_thresh,
+            settings.post_filter_beta,
+        ];
+        for (atomic, value) in self.0.iter().zip(values) {
+            atomic.store(value.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    fn load(&self) -> ModelSettings {
+        let [atten_lim, min_db_thresh, max_db_erb_thresh, max_db_df_thresh, post_filter_beta] =
+            self.0
+                .each_ref()
+                .map(|a| f32::from_bits(a.load(Ordering::Relaxed)));
+        ModelSettings {
+            atten_lim,
+            min_db_thresh,
+            max_db_erb_thresh,
+            max_db_df_thresh,
+            post_filter_beta,
+        }
+    }
+}
 
 /// Wrap a `DfTract` instance behind a worker thread.
 /// Note: this will add latency to the input, but this
@@ -21,7 +83,7 @@ pub struct DfWrapper {
     sender: Option<rtrb::Producer<Sample>>,
     receiver: Option<rtrb::Consumer<Sample>>,
     worker: Option<std::thread::JoinHandle<()>>,
-    worker_param: Arc<AtomicU32>,
+    settings: Arc<SharedSettings>,
 }
 
 struct IOResampler {
@@ -30,12 +92,12 @@ struct IOResampler {
 }
 
 impl DfWrapper {
-    pub fn new(attenuation_limit: f32) -> Self {
+    pub fn new(settings: ModelSettings) -> Self {
         Self {
             sender: None,
             receiver: None,
             worker: None,
-            worker_param: Arc::new(AtomicU32::new(attenuation_limit.to_bits())),
+            settings: Arc::new(SharedSettings::new(settings)),
         }
     }
 
@@ -51,23 +113,16 @@ impl DfWrapper {
         let (mut worker_sender, worker_destination) =
             RingBuffer::<Sample>::new(buffer_capacity as usize);
 
-        let param = self.worker_param.clone();
+        let shared_settings = self.settings.clone();
 
         let worker = thread::spawn(move || {
             let mut model = DfTract::new(DfParams::default(), &RuntimeParams::default_with_ch(2))
                 .expect("initialising df failed");
 
             // set initial parameters
-            let mut current_atten_lim =
-                f32::from_bits(param.load(std::sync::atomic::Ordering::Relaxed));
-            model.set_atten_lim(current_atten_lim);
-            // same default as the official LADSPA plugin
-            model.min_db_thresh = -15.;
-            model.max_db_erb_thresh = 35.;
-            model.max_db_df_thresh = 35.;
-            nice_log!("atten lim set to: {current_atten_lim}");
-
-            // model.set_pf_beta(1.);
+            let mut current_settings = shared_settings.load();
+            current_settings.apply(&mut model);
+            nice_log!("model settings: {current_settings:?}");
 
             // todo: resampling optional when incoming sr is right
             let mut resampler = IOResampler {
@@ -105,10 +160,9 @@ impl DfWrapper {
             let mut enhanced = noisy.clone();
 
             nice_log!(
-                "worker thread {:?} starting with model sr: {} and atten_lim: {:?}",
+                "worker thread {:?} starting with model sr: {}",
                 thread::current().id(),
                 model.sr,
-                model.atten_lim,
             );
 
             // Fill the initial output buffer with zeroes
@@ -122,13 +176,6 @@ impl DfWrapper {
                 if worker_input.is_empty() {
                     spin_loop();
                     continue;
-                }
-
-                // update attenuation limit
-                let new_param = f32::from_bits(param.load(std::sync::atomic::Ordering::Relaxed));
-                if new_param != current_atten_lim {
-                    model.set_atten_lim(new_param);
-                    current_atten_lim = new_param;
                 }
 
                 let frame = worker_input.pop().unwrap();
@@ -151,6 +198,13 @@ impl DfWrapper {
                         for i in 0..model.hop_size {
                             noisy[[c, i]] = model_in_buf.read_sample(c, i).unwrap();
                         }
+                    }
+
+                    // pick up parameter changes once per hop
+                    let new_settings = shared_settings.load();
+                    if new_settings != current_settings {
+                        new_settings.apply(&mut model);
+                        current_settings = new_settings;
                     }
 
                     model
@@ -214,12 +268,8 @@ impl DfWrapper {
         *sample[1] = out[1];
     }
 
-    pub fn update_atten_limit(&mut self, db: f32) {
-        let int = db.to_bits();
-        if self.worker_param.load(std::sync::atomic::Ordering::Relaxed) != int {
-            self.worker_param
-                .store(int, std::sync::atomic::Ordering::Relaxed);
-        }
+    pub fn update_settings(&mut self, settings: ModelSettings) {
+        self.settings.store(settings);
     }
 
     fn send_sample(&mut self, s: &Sample) {
