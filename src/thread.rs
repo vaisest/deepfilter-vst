@@ -1,3 +1,6 @@
+use audio_thread_priority::{
+    demote_current_thread_from_real_time, promote_current_thread_to_real_time,
+};
 use audioadapter::{Adapter, AdapterMut};
 use audioadapter_buffers::{direct::SequentialSliceOfVecs, owned::SequentialOwned};
 use core::f32;
@@ -83,6 +86,8 @@ pub struct DfWrapper {
     sender: Option<rtrb::Producer<Sample>>,
     receiver: Option<rtrb::Consumer<Sample>>,
     worker: Option<std::thread::JoinHandle<()>>,
+    /// set from the audio thread when it notices the worker is gone, so that it doesn't wait on it
+    worker_died: bool,
     settings: Arc<SharedSettings>,
 }
 
@@ -97,12 +102,16 @@ impl DfWrapper {
             sender: None,
             receiver: None,
             worker: None,
+            worker_died: false,
             settings: Arc::new(SharedSettings::new(settings)),
         }
     }
 
-    /// initialises model in worker thread and attaches input and output buffers to it
-    pub fn init(&mut self, plugin_sample_rate: usize) -> u32 {
+    /// initialises model in worker thread and attaches input and output buffers to it. Returns the
+    /// latency in samples, or `None` if the worker failed to start.
+    pub fn init(&mut self, plugin_sample_rate: usize) -> Option<u32> {
+        self.stop();
+
         // the field is private, but we know it's 480
         let hop_size = 960u32;
         let buffer_capacity = hop_size * 2;
@@ -165,20 +174,30 @@ impl DfWrapper {
                 model.sr,
             );
 
+            // use the same scheduling class as audio threads, so that the worker isn't preempted
+            // by regular threads when the system is busy.
+            let rt_handle =
+                match promote_current_thread_to_real_time(model.hop_size as u32, model.sr as u32) {
+                    Ok(handle) => Some(handle),
+                    Err(e) => {
+                        nice_log!("could not raise worker thread priority: {e}");
+                        None
+                    }
+                };
+
             // Fill the initial output buffer with zeroes
             nice_log!("sending {} zeroes...", buffer_capacity);
             for _ in 0..(buffer_capacity) {
                 worker_sender.push([0.0; 2]).unwrap();
             }
 
-            // as long as the ring buffer exists, poll for new data
+            // as long as the ring buffer exists, process new data
             while !worker_input.is_abandoned() {
-                if worker_input.is_empty() {
-                    spin_loop();
+                let Ok(frame) = worker_input.pop() else {
+                    // sleep until the plugin sends more samples
+                    thread::park();
                     continue;
-                }
-
-                let frame = worker_input.pop().unwrap();
+                };
                 in_buf[0].push(frame[0]);
                 in_buf[1].push(frame[1]);
 
@@ -236,55 +255,104 @@ impl DfWrapper {
                 }
             }
 
+            if let Some(handle) = rt_handle {
+                if let Err(e) = demote_current_thread_from_real_time(handle) {
+                    nice_log!("could not reset worker thread priority: {e}");
+                }
+            }
             nice_log!("worker thread {:?} exiting...", thread::current().id());
         });
 
         // wait for worker thread to fully start and for it to prefill the output buffer
         while worker_destination.is_empty() {
+            if worker.is_finished() {
+                let _ = worker.join();
+                return None;
+            }
             spin_loop();
         }
 
         self.sender.replace(plugin_sender);
         self.receiver.replace(worker_destination);
-        assert!(!worker.is_finished(), "the worker failed to initialise.");
         self.worker.replace(worker);
-        buffer_capacity
+        self.worker_died = false;
+        Some(buffer_capacity)
     }
 
+    /// Replaces the sample with a processed one. If the worker thread has died, for example due to
+    /// a panic, the sample is passed through unprocessed instead.
     pub fn process(&mut self, sample: [&mut f32; 2]) {
-        while self.sender.as_mut().unwrap().is_full() {
-            // worker thread is busy -> wait
-            spin_loop();
+        let (Some(sender), Some(receiver), Some(worker)) =
+            (&mut self.sender, &mut self.receiver, &self.worker)
+        else {
+            return;
+        };
+        if self.worker_died {
+            return;
         }
 
-        self.send_sample(&[*sample[0], *sample[1]]);
-
-        while self.receiver.as_mut().unwrap().is_empty() {
-            spin_loop();
+        // a dead worker drops its ends of the queues, which shows up as them being abandoned.
+        // Without checking for it these loops would wait forever and hang the host.
+        if sender.is_full() {
+            // worker thread is behind -> make sure it's awake and wait
+            worker.thread().unpark();
+            while sender.is_full() {
+                if sender.is_abandoned() {
+                    self.worker_died = true;
+                    return;
+                }
+                spin_loop();
+            }
         }
 
-        let out = self.receive_sample();
+        sender
+            .push([*sample[0], *sample[1]])
+            .expect("queue was full");
+
+        if receiver.is_empty() {
+            worker.thread().unpark();
+            while receiver.is_empty() {
+                if receiver.is_abandoned() {
+                    self.worker_died = true;
+                    return;
+                }
+                spin_loop();
+            }
+        }
+
+        let out = receiver.pop().expect("queue was empty");
         *sample[0] = out[0];
         *sample[1] = out[1];
+    }
+
+    /// Lets the worker process the samples sent so far. This should be called after each block,
+    /// as the worker sleeps while it has no input.
+    pub fn wake_worker(&self) {
+        if let Some(worker) = &self.worker {
+            worker.thread().unpark();
+        }
+    }
+
+    /// Stops the worker thread if one is running and waits for it to exit
+    pub fn stop(&mut self) {
+        // dropping the input queue signals the worker to exit
+        self.sender = None;
+        self.receiver = None;
+        if let Some(worker) = self.worker.take() {
+            worker.thread().unpark();
+            if worker.join().is_err() {
+                nice_log!("worker thread panicked");
+            }
+        }
     }
 
     pub fn update_settings(&mut self, settings: ModelSettings) {
         self.settings.store(settings);
     }
+}
 
-    fn send_sample(&mut self, s: &Sample) {
-        self.sender
-            .as_mut()
-            .unwrap()
-            .push([s[0], s[1]])
-            .expect("queue was full");
-    }
-
-    fn receive_sample(&mut self) -> Sample {
-        self.receiver
-            .as_mut()
-            .unwrap()
-            .pop()
-            .expect("queue was empty")
+impl Drop for DfWrapper {
+    fn drop(&mut self) {
+        self.stop();
     }
 }

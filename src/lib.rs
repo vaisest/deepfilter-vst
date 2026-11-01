@@ -164,7 +164,10 @@ impl Plugin for Vst {
         );
 
         self.model.update_settings(settings);
-        let latency = self.model.init(buffer_config.sample_rate as usize);
+        let Some(latency) = self.model.init(buffer_config.sample_rate as usize) else {
+            nice_log!("the model failed to start");
+            return false;
+        };
         context.set_latency_samples(latency);
 
         true
@@ -183,11 +186,14 @@ impl Plugin for Vst {
 
             self.model.process([it.next().unwrap(), it.next().unwrap()]);
         }
+        self.model.wake_worker();
 
         ProcessStatus::Normal
     }
 
-    fn deactivate(&mut self) {}
+    fn deactivate(&mut self) {
+        self.model.stop();
+    }
 }
 
 impl Vst3Plugin for Vst {

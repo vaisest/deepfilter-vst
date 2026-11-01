@@ -18,6 +18,7 @@ path = "src/main.rs"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
+audio_thread_priority = { version = "0.38.0", default-features = false }
 audioadapter = "2.0.0"
 audioadapter-buffers = "2.0.0"
 # fork due to dependency version issues
