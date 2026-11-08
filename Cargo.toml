@@ -33,7 +33,7 @@ deep_filter = { git = "https://github.com/vaisest/DeepFilterNet.git", default-fe
     "default-model",
 ] }
 egui = { version = "0.37.0", features = ["default_fonts"] }
-ndarray = "^0.15"
+ndarray = "^0.17"
 # Remove the `assert_process_allocs` feature to allow allocations on the audio
 # thread in debug builds.
 nice-plug = { version = "0.4.2", features = [
