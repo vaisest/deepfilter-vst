@@ -58,9 +58,9 @@ jobs:
       - name: Package
         run: |
           archive="deepfilter-vst-${{ github.ref_name }}-${{ matrix.name }}.zip"
-          cp README.md models/LICENSE-DPDFNet target/bundled/
+          cp README.md target/bundled/
           cd target/bundled
-          files="deepfilter-vst.vst3 deepfilter-vst.clap README.md LICENSE-DPDFNet"
+          files="deepfilter-vst.vst3 deepfilter-vst.clap README.md"
           if [ "$RUNNER_OS" = "Windows" ]; then
             7z a "../../$archive" $files
           else
