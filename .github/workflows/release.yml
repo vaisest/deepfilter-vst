@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags: ["*"]
+  # Manual runs build and upload the bundles as workflow artifacts, but don't
+  # create a release
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 for an older glibc, so the plugin also loads on older distros
+          - name: linux-x86_64
+            os: ubuntu-22.04
+          - name: windows-x86_64
+            os: windows-latest
+          # ONNX Runtime has no prebuilt binaries for Intel Macs, so only Apple
+          # Silicon is built here
+          - name: macos-arm64
+            os: macos-latest
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libgl-dev libjack-dev libssl-dev \
+            libx11-xcb-dev libxcb1-dev libxcb-dri2-0-dev libxcb-icccm4-dev \
+            libxcursor-dev libxkbcommon-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Bundle
+        run: cargo xtask bundle deepfilter-vst --release
+
+      # Apple Silicon refuses to load unsigned code, so the bundles are signed
+      # ad hoc. Downloaded copies still need to be cleared from quarantine
+      - name: Sign macOS bundles
+        if: runner.os == 'macOS'
+        run: |
+          codesign --force --deep --sign - target/bundled/deepfilter-vst.vst3
+          codesign --force --deep --sign - target/bundled/deepfilter-vst.clap
+
+      - name: Package
+        run: |
+          archive="deepfilter-vst-${{ github.ref_name }}-${{ matrix.name }}.zip"
+          cp README.md models/LICENSE-DPDFNet target/bundled/
+          cd target/bundled
+          files="deepfilter-vst.vst3 deepfilter-vst.clap README.md LICENSE-DPDFNet"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a "../../$archive" $files
+          else
+            zip -ry "../../$archive" $files
+          fi
+          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ env.ARCHIVE }}
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: "*.zip"
+          generate_release_notes: true
