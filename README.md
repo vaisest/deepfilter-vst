@@ -18,6 +18,11 @@ The plugin has a small editor with a slider for each parameter. Hovering over a 
 | Max DF Processing Threshold | -15 – 35 dB | 35 dB | Moments where the estimated signal-to-noise ratio is above this skip the second, finer filtering stage. Lowering it saves CPU. |
 | Post Filter Beta | 0 – 0.05 | 0 (off) | Strength of an extra filter that further reduces leftover noise, at the cost of a slightly thinner voice. |
 
+## Downloads
+
+Prebuilt packages are available for Linux, Windows, and ARM MacOS in the releases section of this repo.  
+MacOS is completely untested due to me not having a Mac. The package is also only ad-hoc signed, which means that MacOS might refuse to run it.
+
 ## Notes
 
 The plugin has a stereo input and output. Any sample rate works, as the audio is resampled to the model's 48 kHz internally.
